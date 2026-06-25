@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { io } from 'socket.io-client';
+import { API_URL } from '../config/api';
 import { motion } from 'motion/react';
 import {
   BarChart,
@@ -14,7 +15,10 @@ import {
   Cell,
   Legend
 } from 'recharts';
-import { Users, Activity, CheckCircle, Clock, RefreshCw, TrendingUp } from 'lucide-react';
+import { Users, Activity, CheckCircle, Clock, RefreshCw, TrendingUp, Heart, FileText, Shield } from 'lucide-react';
+import ManageUsersPanel from './admin/ManageUsersPanel';
+import PrayerRequestsPanel from './admin/PrayerRequestsPanel';
+import ReportsPanel from './admin/ReportsPanel';
 
 const COLORS = ['#06b6d4', '#0ea5e9', '#3b82f6', '#8b5cf6', '#a855f7'];
 
@@ -81,10 +85,11 @@ export default function AdminDashboard({ token }: { token: string }) {
   const [stats, setStats] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [activeTab, setActiveTab] = useState<'overview' | 'users' | 'prayers' | 'reports'>('overview');
 
   const fetchStats = async () => {
     try {
-      const res = await fetch('/api/stats', {
+      const res = await fetch(`${API_URL}/api/stats`, {
         headers: {
           'Authorization': `Bearer ${token}`
         }
@@ -104,7 +109,7 @@ export default function AdminDashboard({ token }: { token: string }) {
   useEffect(() => {
     fetchStats();
 
-    const socket = io();
+    const socket = io(API_URL);
 
     socket.on('VisitorAdded', () => {
       fetchStats();
@@ -181,6 +186,39 @@ export default function AdminDashboard({ token }: { token: string }) {
           </div>
         </div>
       </motion.div>
+
+      {/* Tab Navigation */}
+      <div className="flex gap-1 p-1 bg-zinc-900/60 rounded-xl border border-zinc-800/50 w-fit">
+        {[
+          { key: 'overview' as const, label: 'Overview', icon: Activity },
+          { key: 'users' as const, label: 'Manage Users', icon: Shield },
+          { key: 'prayers' as const, label: 'Prayer Requests', icon: Heart },
+          { key: 'reports' as const, label: 'Reports', icon: FileText },
+        ].map((tab) => (
+          <button
+            key={tab.key}
+            onClick={() => setActiveTab(tab.key)}
+            className={`px-4 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 transition-all cursor-pointer ${
+              activeTab === tab.key
+                ? 'bg-cyan-900/30 text-cyan-400 border border-cyan-800/40 shadow-[0_0_10px_rgba(6,182,212,0.1)]'
+                : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50 border border-transparent'
+            }`}
+          >
+            <tab.icon className="w-3.5 h-3.5" />
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Tab Content */}
+      {activeTab === 'users' ? (
+        <ManageUsersPanel token={token} />
+      ) : activeTab === 'prayers' ? (
+        <PrayerRequestsPanel token={token} />
+      ) : activeTab === 'reports' ? (
+        <ReportsPanel token={token} />
+      ) : (
+      <>
 
       {/* Top Row: KPIs */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
@@ -293,6 +331,8 @@ export default function AdminDashboard({ token }: { token: string }) {
           </ResponsiveContainer>
         </div>
       </motion.div>
+      </>
+      )}
     </div>
   );
 }

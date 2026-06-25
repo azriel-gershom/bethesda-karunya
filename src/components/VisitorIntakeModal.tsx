@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { X, UserPlus, Phone, MapPin, Calendar, Heart, BookOpen, CheckCircle } from 'lucide-react';
+import { X, UserPlus, Phone, MapPin, Calendar, Heart, BookOpen, CheckCircle, Languages } from 'lucide-react';
 
 interface VisitorIntakeModalProps {
   isOpen: boolean;
@@ -11,6 +11,7 @@ interface VisitorIntakeModalProps {
 const REGIONS = ['North America', 'South America', 'Europe', 'Africa', 'Asia', 'Middle East', 'Oceania', 'Other'];
 const PURPOSES = ['Counseling', 'Prayer', 'Fellowship', 'First Visit', 'Follow-up', 'Business Consultation', 'Other'];
 const PLANS = ['Young Partner Plan', 'Business Blessing'];
+const LANGUAGES = ['English', 'Hindi', 'Tamil', 'Telugu', 'Malayalam', 'Kannada', 'Bengali', 'Spanish', 'French', 'Portuguese', 'Arabic', 'Mandarin', 'Korean', 'Japanese', 'Other'];
 
 export default function VisitorIntakeModal({ isOpen, onClose, onSubmit }: VisitorIntakeModalProps) {
   const [formData, setFormData] = useState({
@@ -18,6 +19,7 @@ export default function VisitorIntakeModal({ isOpen, onClose, onSubmit }: Visito
     phone: '',
     age: '',
     region: '',
+    language: '',
     purpose: '',
     prayerRequest: '',
     assignedPlan: ''
@@ -48,7 +50,7 @@ export default function VisitorIntakeModal({ isOpen, onClose, onSubmit }: Visito
       setSuccess(true);
       setTimeout(() => {
         setSuccess(false);
-        setFormData({ name: '', phone: '', age: '', region: '', purpose: '', prayerRequest: '', assignedPlan: '' });
+        setFormData({ name: '', phone: '', age: '', region: '', language: '', purpose: '', prayerRequest: '', assignedPlan: '' });
         onClose();
       }, 1500);
     } catch (err) {
@@ -192,6 +194,21 @@ export default function VisitorIntakeModal({ isOpen, onClose, onSubmit }: Visito
                     {REGIONS.map(r => <option key={r} value={r} className="bg-zinc-900">{r}</option>)}
                   </select>
                 </div>
+              </div>
+
+              {/* Language Row */}
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-bold uppercase text-zinc-500 tracking-[0.15em] flex items-center gap-1.5">
+                  <Languages className="w-3 h-3" /> Preferred Language
+                </label>
+                <select
+                  value={formData.language}
+                  onChange={(e) => updateField('language', e.target.value)}
+                  className="w-full bg-zinc-950/80 border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-zinc-200 focus:outline-none focus:border-cyan-600 focus:ring-1 focus:ring-cyan-600/50 transition-all hover:border-zinc-700 cursor-pointer appearance-none"
+                >
+                  <option value="" className="bg-zinc-900">Select language</option>
+                  {LANGUAGES.map(l => <option key={l} value={l} className="bg-zinc-900">{l}</option>)}
+                </select>
               </div>
 
               {/* Purpose & Plan Row */}

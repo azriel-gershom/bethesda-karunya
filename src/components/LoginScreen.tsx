@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Lock, User, ShieldAlert, Eye, EyeOff, Building2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { API_URL } from '../config/api';
 
 export default function LoginScreen({ onLogin }: { onLogin: (token: string, user: any) => void }) {
   const [email, setEmail] = useState('');
@@ -28,7 +29,7 @@ export default function LoginScreen({ onLogin }: { onLogin: (token: string, user
     setLoading(true);
 
     try {
-      const res = await fetch('/api/auth/login', {
+      const res = await fetch(`${API_URL}/api/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password })
@@ -190,9 +191,12 @@ export default function LoginScreen({ onLogin }: { onLogin: (token: string, user
           <div className="grid grid-cols-2 gap-2">
             {[
               { user: 'admin', pass: 'admin123', role: 'Admin' },
+              { user: 'employee', pass: 'employee123', role: 'Employee' },
               { user: 'reception', pass: 'reception123', role: 'Reception' },
+              { user: 'counselor', pass: 'counselor123', role: 'Counselor' },
               { user: 'counselor_yp', pass: 'counselor123', role: 'Young Partner' },
               { user: 'counselor_bb', pass: 'counselor123', role: 'Business' },
+              { user: 'volunteer', pass: 'volunteer123', role: 'Volunteer' },
             ].map((cred) => (
               <button
                 key={cred.user}

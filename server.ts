@@ -3,16 +3,73 @@ import path from "path";
 import cors from "cors";
 import { createServer as createViteServer } from "vite";
 import { db } from "./src/db/index.js";
-import { users, visitors, visits } from "./src/db/schema.js";
-import { eq, desc, sql } from "drizzle-orm";
+import { users, visitors, visits, volunteers, assignments, volunteerLanguages, volunteerAvailability } from "./src/db/schema.js";
+import { eq, desc, sql, and, ne, inArray } from "drizzle-orm";
+import { assignVolunteer, reassignVolunteer } from "./src/services/volunteerAssigner.js";
 import { createServer } from "http";
 import { Server } from "socket.io";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import {
+  ROLE_ADMIN,
+  ROLE_EMPLOYEE,
+  ROLE_VOLUNTEER,
+  CAN_ADD_VISITORS,
+  CAN_VIEW_QUEUE,
+  CAN_COMPLETE_VISIT,
+  CAN_VIEW_PRAYERS,
+  CAN_VIEW_COUNSELING_CASES,
+  ADMIN_ONLY,
+  VOLUNTEER_SELF,
+  COUNSELOR_SELF,
+  CAN_EDIT_VOLUNTEER_PROFILE,
+  isCounselor,
+  getCounselorRoom,
+  ALL_ROLES,
+} from "./src/shared/roles.js";
 
 const JWT_SECRET = process.env.JWT_SECRET || "fallback_secret_for_dev";
 
-function requireRole(allowedRoles: string[]) {
+// Extend Express Request type to include user from JWT middleware
+declare global {
+  namespace Express {
+    interface Request {
+      user?: { id: number; role: string; name: string };
+    }
+  }
+}
+
+// =============================================
+// MIDDLEWARE: Role-Based Access Control
+// =============================================
+//
+// How it works:
+// 1. Every protected route calls requireRole(PERMISSION_SET).
+// 2. The permission sets are defined in src/shared/roles.ts.
+// 3. ADMIN is ALWAYS allowed — even if not in the permission set.
+//    This guarantees admins can never be accidentally locked out.
+//
+// Examples:
+//   app.get('/api/queue',  requireRole(CAN_VIEW_QUEUE),  handler);  // All staff
+//   app.get('/api/stats',  requireRole(ADMIN_ONLY),       handler);  // Admin only
+//   app.put('/api/volunteers/me/availability',
+//           requireRole(VOLUNTEER_SELF), handler);                   // Volunteers only
+// =============================================
+
+/**
+ * requireRole — Express middleware factory for role-based route protection.
+ *
+ * @param allowedRoles  A readonly array of role strings that may access this
+ *                      route.  Import one of the pre-built permission sets
+ *                      from src/shared/roles.ts (CAN_ADD_VISITORS, etc.).
+ *
+ * Behaviour:
+ *   - Extracts and verifies the JWT from the Authorization header.
+ *   - Checks decoded.role against allowedRoles.
+ *   - ADMIN is implicitly allowed on EVERY route.
+ *   - Attaches decoded user to req.user for downstream handlers.
+ */
+function requireRole(allowedRoles: readonly string[]) {
   return (req: any, res: any, next: any) => {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
@@ -21,7 +78,12 @@ function requireRole(allowedRoles: string[]) {
     const token = authHeader.split(" ")[1];
     try {
       const decoded = jwt.verify(token, JWT_SECRET) as any;
-      if (!allowedRoles.includes(decoded.role)) {
+
+      // ADMIN always passes — they have unrestricted access.
+      const isAllowed =
+        decoded.role === ROLE_ADMIN || allowedRoles.includes(decoded.role);
+
+      if (!isAllowed) {
         return res.status(403).json({ error: "Forbidden" });
       }
       req.user = decoded;
@@ -83,6 +145,62 @@ async function seedUsers() {
         assignedRoom: 'Business Blessing'
       });
       console.log('Seeded COUNSELOR_BUSINESS user');
+    }
+
+    // Seed a default VOLUNTEER user
+    const existingVolunteers = await db.select().from(users).where(eq(users.role, 'VOLUNTEER'));
+    if (existingVolunteers.length === 0) {
+      const hash = await bcrypt.hash('volunteer123', 10);
+      const [newUser] = await db.insert(users).values({
+        name: 'Test Volunteer',
+        email: 'volunteer',
+        passwordHash: hash,
+        role: 'VOLUNTEER'
+      }).returning();
+
+      // Also create the volunteer profile
+      // Also create the volunteer profile
+      const [newVol] = await db.insert(volunteers).values({
+        userId: newUser.id,
+        fullName: 'Test Volunteer',
+        phone: '123-456-7890',
+        department: 'General',
+        status: 'active',
+        maxTasksPerDay: 5,
+      }).returning();
+      
+      await db.insert(volunteerLanguages).values([
+        { volunteerId: newVol.id, language: 'English' },
+        { volunteerId: newVol.id, language: 'Hindi' }
+      ]);
+      console.log('Seeded VOLUNTEER user with profile');
+    }
+
+    // Seed a default EMPLOYEE user (new role — general staff)
+    const existingEmployees = await db.select().from(users).where(eq(users.role, 'EMPLOYEE'));
+    if (existingEmployees.length === 0) {
+      const hash = await bcrypt.hash('employee123', 10);
+      await db.insert(users).values({
+        name: 'Staff Member',
+        email: 'employee',
+        passwordHash: hash,
+        role: 'EMPLOYEE',
+      });
+      console.log('Seeded EMPLOYEE user');
+    }
+
+    // Seed a default generic COUNSELOR user (new role — room assigned via assignedRoom)
+    const existingCounselors = await db.select().from(users).where(eq(users.role, 'COUNSELOR'));
+    if (existingCounselors.length === 0) {
+      const hash = await bcrypt.hash('counselor123', 10);
+      await db.insert(users).values({
+        name: 'General Counselor',
+        email: 'counselor',
+        passwordHash: hash,
+        role: 'COUNSELOR',
+        assignedRoom: 'General',
+      });
+      console.log('Seeded COUNSELOR user');
     }
   } catch (err) {
     console.error('Failed to seed users', err);
@@ -159,9 +277,10 @@ async function startServer() {
   });
 
   // 1. Create a POST /api/visitors endpoint
-  app.post("/api/visitors", requireRole(["RECEPTIONIST", "ADMIN"]), async (req, res) => {
+  // Visitor intake — Admin, Employee, Receptionist can add visitors
+  app.post("/api/visitors", requireRole(CAN_ADD_VISITORS), async (req, res) => {
     try {
-      const { name, phone, age, region, purpose, prayerRequest, assignedPlan } = req.body;
+      const { name, phone, age, region, language, purpose, prayerRequest, assignedPlan } = req.body;
 
       if (!name || !phone || !purpose) {
          return res.status(400).json({ error: "Missing required fields: name, phone, purpose" });
@@ -185,7 +304,8 @@ async function startServer() {
             .set({ 
               isReturning: true,
               age: age ?? existingVisitors[0].age,
-              region: region ?? existingVisitors[0].region
+              region: region ?? existingVisitors[0].region,
+              language: language ?? existingVisitors[0].language
             })
             .where(eq(visitors.id, visitorId));
         } else {
@@ -197,6 +317,7 @@ async function startServer() {
               phone,
               age,
               region,
+              language,
               isReturning: false,
             })
             .returning({ id: visitors.id });
@@ -238,11 +359,35 @@ async function startServer() {
            phone,
            age,
            region,
+           language,
            isReturning: result.isReturning
         }
       });
 
-      res.status(201).json({ success: true, ...result });
+      // Auto-assign a volunteer if available
+      let assignedVolunteer = null;
+      let assignmentStatus = "UNASSIGNED";
+      try {
+        const assignment = await assignVolunteer({
+          visitId: result.visitId,
+          purpose,
+          language: language || null,
+        });
+        if (assignment) {
+          assignedVolunteer = assignment;
+          assignmentStatus = "ASSIGNED";
+          io.emit("VolunteerAssigned", {
+            assignmentId: assignment.assignmentId,
+            volunteerId: assignment.volunteerId,
+            visitId: result.visitId,
+            taskType: 'VISITOR_ENGAGEMENT',
+          });
+        }
+      } catch (assignErr) {
+        console.error("Auto-assignment failed (non-blocking):", assignErr);
+      }
+
+      res.status(201).json({ success: true, ...result, assignedVolunteer, assignmentStatus });
 
     } catch (error) {
       console.error("Error creating visitor entry:", error);
@@ -251,7 +396,8 @@ async function startServer() {
   });
 
   // 2. Create a GET /api/queue endpoint
-  app.get("/api/queue", requireRole(["RECEPTIONIST", "COUNSELOR_YOUNG_PARTNER", "COUNSELOR_BUSINESS", "ADMIN"]), async (req, res) => {
+  // Live queue — all staff roles need situational awareness
+  app.get("/api/queue", requireRole(CAN_VIEW_QUEUE), async (req, res) => {
     try {
       // Fetch visits with 'WAITING' status, combined with visitor info
       const queue = await db
@@ -284,14 +430,15 @@ async function startServer() {
   });
 
   // 3. Create a PUT /api/visits/:id/complete endpoint
-  app.put("/api/visits/:id/complete", requireRole(["COUNSELOR_YOUNG_PARTNER", "COUNSELOR_BUSINESS", "ADMIN"]), async (req, res) => {
+  // Complete a visit — counselors, volunteers (admin always allowed)
+  app.put("/api/visits/:id/complete", requireRole(CAN_COMPLETE_VISIT), async (req, res) => {
     try {
       const { id } = req.params;
       const visitId = parseInt(id, 10);
       
       const updatedVisit = await db
         .update(visits)
-        .set({ status: 'COMPLETED', completionTime: new Date() })
+        .set({ status: 'COMPLETED', completionTime: new Date(), handledBy: req.user.id })
         .where(eq(visits.id, visitId))
         .returning();
 
@@ -309,7 +456,8 @@ async function startServer() {
   });
 
   // 4. Create a GET /api/stats endpoint
-  app.get("/api/stats", requireRole(["ADMIN"]), async (req, res) => {
+  // Admin-only dashboard stats
+  app.get("/api/stats", requireRole(ADMIN_ONLY), async (req, res) => {
     try {
       // 1. Total Visitors Today
       const visitorsCounts = await db.select({ count: sql`count(*)`.mapWith(Number) }).from(visitors);
@@ -379,6 +527,613 @@ async function startServer() {
     } catch (error) {
       console.error("Error fetching stats:", error);
       res.status(500).json({ error: "Internal server error fetching stats." });
+    }
+  });
+
+  // =============================================
+  // 5. USER MANAGEMENT ROUTES (Admin)
+  // =============================================
+
+  // List all users
+  // Admin-only: list all users
+  app.get("/api/users", requireRole(ADMIN_ONLY), async (req, res) => {
+    try {
+      const allUsers = await db.select({
+        id: users.id,
+        name: users.name,
+        email: users.email,
+        role: users.role,
+        assignedRoom: users.assignedRoom,
+        createdAt: users.createdAt,
+      }).from(users).orderBy(desc(users.createdAt));
+      res.json({ success: true, data: allUsers });
+    } catch (error) {
+      console.error("Error listing users:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // Create a new user
+  // Admin-only: create a new user
+  app.post("/api/users", requireRole(ADMIN_ONLY), async (req, res) => {
+    try {
+      const { name, email, password, role, assignedRoom, languages, categories } = req.body;
+      if (!name || !email || !password || !role) {
+        return res.status(400).json({ error: "Missing required fields: name, email, password, role" });
+      }
+
+      const existing = await db.select().from(users).where(eq(users.email, email)).limit(1);
+      if (existing.length > 0) {
+        return res.status(409).json({ error: "A user with this email/username already exists" });
+      }
+
+      const hash = await bcrypt.hash(password, 10);
+      const [newUser] = await db.insert(users).values({
+        name,
+        email,
+        passwordHash: hash,
+        role,
+        assignedRoom: assignedRoom || null,
+      }).returning();
+
+      // If the role is VOLUNTEER, also create a volunteer profile
+      if (role === 'VOLUNTEER') {
+        const [newVol] = await db.insert(volunteers).values({
+          userId: newUser.id,
+          fullName: name,
+          department: categories && categories.length > 0 ? categories[0] : 'General',
+          status: 'active',
+          maxTasksPerDay: 5,
+        }).returning();
+        
+        if (languages && languages.length > 0) {
+          await db.insert(volunteerLanguages).values(
+            languages.map((l: string) => ({ volunteerId: newVol.id, language: l }))
+          );
+        }
+      }
+
+      res.status(201).json({ success: true, data: { id: newUser.id, name: newUser.name, email: newUser.email, role: newUser.role } });
+    } catch (error) {
+      console.error("Error creating user:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // Update user
+  // Admin-only: update a user
+  app.put("/api/users/:id", requireRole(ADMIN_ONLY), async (req, res) => {
+    try {
+      const userId = parseInt(req.params.id, 10);
+      const { name, email, role, assignedRoom, password } = req.body;
+
+      const updateData: any = {};
+      if (name) updateData.name = name;
+      if (email) updateData.email = email;
+      if (role) updateData.role = role;
+      if (assignedRoom !== undefined) updateData.assignedRoom = assignedRoom;
+      if (password) updateData.passwordHash = await bcrypt.hash(password, 10);
+
+      const [updated] = await db.update(users).set(updateData).where(eq(users.id, userId)).returning();
+      if (!updated) return res.status(404).json({ error: "User not found" });
+
+      res.json({ success: true, data: { id: updated.id, name: updated.name, email: updated.email, role: updated.role } });
+    } catch (error) {
+      console.error("Error updating user:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // Delete user
+  // Admin-only: delete a user
+  app.delete("/api/users/:id", requireRole(ADMIN_ONLY), async (req, res) => {
+    try {
+      const userId = parseInt(req.params.id, 10);
+
+      // Don't allow deleting yourself
+      if (userId === req.user.id) {
+        return res.status(400).json({ error: "Cannot delete your own account" });
+      }
+
+      // If volunteer, deactivate the profile
+      const volProfiles = await db.select().from(volunteers).where(eq(volunteers.userId, userId));
+      if (volProfiles.length > 0) {
+        await db.update(volunteers).set({ status: 'inactive' }).where(eq(volunteers.userId, userId));
+      }
+
+      await db.delete(users).where(eq(users.id, userId));
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting user:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // =============================================
+  // 6. VOLUNTEER ROUTES
+  // =============================================
+
+  // List all volunteers (with user info)
+  // Admin-only: list all volunteers
+  app.get("/api/volunteers", requireRole(ADMIN_ONLY), async (req, res) => {
+    try {
+      const allVols = await db
+        .select({
+          id: volunteers.id,
+          userId: volunteers.userId,
+          name: users.name,
+          email: users.email,
+          department: volunteers.department,
+          status: volunteers.status,
+          maxTasksPerDay: volunteers.maxTasksPerDay,
+          createdAt: volunteers.createdAt,
+        })
+        .from(volunteers)
+        .innerJoin(users, eq(volunteers.userId, users.id))
+        .orderBy(desc(volunteers.createdAt));
+
+      const allLangs = await db.select().from(volunteerLanguages);
+      const allAvail = await db.select().from(volunteerAvailability);
+
+      const formattedVols = allVols.map(v => ({
+        id: v.id,
+        userId: v.userId,
+        name: v.name,
+        email: v.email,
+        languages: allLangs.filter(l => l.volunteerId === v.id).map(l => l.language),
+        categories: v.department ? [v.department] : [],
+        isAvailable: allAvail.some(a => a.volunteerId === v.id && a.isAvailable),
+        isActive: v.status === 'active',
+        currentWorkload: 0,
+        maxWorkload: v.maxTasksPerDay,
+        notes: null,
+        createdAt: v.createdAt
+      }));
+
+      res.json({ success: true, data: formattedVols });
+    } catch (error) {
+      console.error("Error listing volunteers:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // Toggle own availability
+  // Volunteer self-service: toggle availability
+  app.put("/api/volunteers/me/availability", requireRole(VOLUNTEER_SELF), async (req, res) => {
+    try {
+      const { isAvailable } = req.body;
+      const [vol] = await db.select().from(volunteers).where(eq(volunteers.userId, req.user.id));
+      if (!vol) return res.status(404).json({ error: "Volunteer profile not found" });
+
+      const today = new Date().getDay();
+      await db.delete(volunteerAvailability).where(and(
+        eq(volunteerAvailability.volunteerId, vol.id),
+        eq(volunteerAvailability.dayOfWeek, today)
+      ));
+      
+      if (isAvailable) {
+         await db.insert(volunteerAvailability).values({
+           volunteerId: vol.id,
+           dayOfWeek: today,
+           startTime: '00:00',
+           endTime: '23:59',
+           isAvailable: true
+         });
+      }
+
+      io.emit("VolunteerStatusChanged", { volunteerId: vol.id, isAvailable: !!isAvailable });
+
+      res.json({ success: true, data: { isAvailable: !!isAvailable } });
+    } catch (error) {
+      console.error("Error toggling availability:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // Update own profile (languages, categories)
+  // Volunteer or admin: update volunteer profile
+  app.put("/api/volunteers/me/profile", requireRole(CAN_EDIT_VOLUNTEER_PROFILE), async (req, res) => {
+    try {
+      const { languages: langs, categories: cats, notes: profileNotes } = req.body;
+      const [vol] = await db.select().from(volunteers).where(eq(volunteers.userId, req.user.id));
+      if (!vol) return res.status(404).json({ error: "Volunteer profile not found" });
+
+      if (langs) {
+        await db.delete(volunteerLanguages).where(eq(volunteerLanguages.volunteerId, vol.id));
+        if (langs.length > 0) {
+          await db.insert(volunteerLanguages).values(langs.map((l: string) => ({ volunteerId: vol.id, language: l })));
+        }
+      }
+      if (cats && cats.length > 0) {
+        await db.update(volunteers).set({ department: cats[0] }).where(eq(volunteers.id, vol.id));
+      }
+
+      res.json({ success: true, data: { success: true } });
+    } catch (error) {
+      console.error("Error updating volunteer profile:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // Get own assignments
+  // Volunteer self-service: view own assignments
+  app.get("/api/volunteers/me/assignments", requireRole(VOLUNTEER_SELF), async (req, res) => {
+    try {
+      const [vol] = await db.select().from(volunteers).where(eq(volunteers.userId, req.user.id));
+      if (!vol) return res.status(404).json({ error: "Volunteer profile not found" });
+
+      const assignmentsList = await db
+        .select({
+          id: assignments.id,
+          visitId: assignments.visitId,
+          status: assignments.assignmentStatus,
+          notes: assignments.notes,
+          assignedAt: assignments.assignedAt,
+          completedAt: assignments.completedAt,
+          visitorName: visitors.name,
+          visitorPhone: visitors.phone,
+          visitorLanguage: visitors.language,
+          visitPurpose: visits.purpose,
+          visitPrayerRequest: visits.prayerRequest,
+          visitStatus: visits.status,
+        })
+        .from(assignments)
+        .leftJoin(visits, eq(assignments.visitId, visits.id))
+        .leftJoin(visitors, eq(visits.visitorId, visitors.id))
+        .where(eq(assignments.volunteerId, vol.id))
+        .orderBy(desc(assignments.assignedAt));
+
+      const formattedAssignments = assignmentsList.map(a => ({
+        ...a,
+        taskType: 'VISITOR_ENGAGEMENT', // Legacy hardcode for frontend
+        status: a.status.toUpperCase(),
+        acceptedAt: a.assignedAt // Mocked for frontend
+      }));
+
+      res.json({ success: true, data: formattedAssignments });
+    } catch (error) {
+      console.error("Error fetching assignments:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // Accept an assignment
+  // Volunteer self-service: accept an assignment
+  app.put("/api/assignments/:id/accept", requireRole(VOLUNTEER_SELF), async (req, res) => {
+    try {
+      const assignmentId = parseInt(req.params.id, 10);
+      const [vol] = await db.select().from(volunteers).where(eq(volunteers.userId, req.user.id));
+      if (!vol) return res.status(404).json({ error: "Volunteer profile not found" });
+
+      const [assignment] = await db.select().from(assignments).where(eq(assignments.id, assignmentId));
+      if (!assignment) return res.status(404).json({ error: "Assignment not found" });
+      if (assignment.volunteerId !== vol.id) return res.status(403).json({ error: "Not your assignment" });
+
+      const [updated] = await db
+        .update(assignments)
+        .set({ assignmentStatus: 'accepted' })
+        .where(eq(assignments.id, assignmentId))
+        .returning();
+
+      // Update the visit status to IN_SESSION
+      if (assignment.visitId) {
+        await db.update(visits).set({ status: 'IN_SESSION', handledBy: req.user.id }).where(eq(visits.id, assignment.visitId));
+      }
+
+      io.emit("AssignmentAccepted", { assignmentId, volunteerId: vol.id });
+
+      res.json({ success: true, data: updated });
+    } catch (error) {
+      console.error("Error accepting assignment:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // Complete an assignment
+  // Volunteer self-service: complete an assignment
+  app.put("/api/assignments/:id/complete", requireRole(VOLUNTEER_SELF), async (req, res) => {
+    try {
+      const assignmentId = parseInt(req.params.id, 10);
+      const { notes: completionNotes } = req.body;
+      const [vol] = await db.select().from(volunteers).where(eq(volunteers.userId, req.user.id));
+      if (!vol) return res.status(404).json({ error: "Volunteer profile not found" });
+
+      const [assignment] = await db.select().from(assignments).where(eq(assignments.id, assignmentId));
+      if (!assignment) return res.status(404).json({ error: "Assignment not found" });
+      if (assignment.volunteerId !== vol.id) return res.status(403).json({ error: "Not your assignment" });
+
+      const [updated] = await db
+        .update(assignments)
+        .set({ assignmentStatus: 'completed', completedAt: new Date(), notes: completionNotes || assignment.notes })
+        .where(eq(assignments.id, assignmentId))
+        .returning();
+
+      // Complete the visit too
+      if (assignment.visitId) {
+        await db.update(visits).set({ status: 'COMPLETED', completionTime: new Date(), handledBy: req.user.id }).where(eq(visits.id, assignment.visitId));
+        io.emit("VisitorCompleted", { visitId: assignment.visitId });
+      }
+
+      io.emit("AssignmentCompleted", { assignmentId, volunteerId: vol.id, visitId: assignment.visitId });
+
+      res.json({ success: true, data: updated });
+    } catch (error) {
+      console.error("Error completing assignment:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // Decline an assignment — triggers re-assignment
+  // Volunteer self-service: decline an assignment (triggers re-assignment)
+  app.put("/api/assignments/:id/decline", requireRole(VOLUNTEER_SELF), async (req, res) => {
+    try {
+      const assignmentId = parseInt(req.params.id, 10);
+      const [vol] = await db.select().from(volunteers).where(eq(volunteers.userId, req.user.id));
+      if (!vol) return res.status(404).json({ error: "Volunteer profile not found" });
+
+      const [assignment] = await db.select().from(assignments).where(eq(assignments.id, assignmentId));
+      if (!assignment) return res.status(404).json({ error: "Assignment not found" });
+      if (assignment.volunteerId !== vol.id) return res.status(403).json({ error: "Not your assignment" });
+
+      await db
+        .update(assignments)
+        .set({ assignmentStatus: 'reassigned' })
+        .where(eq(assignments.id, assignmentId));
+
+      io.emit("AssignmentDeclined", { assignmentId, volunteerId: vol.id });
+
+      // Attempt re-assignment if visit is still active
+      if (assignment.visitId) {
+        // Gather all declined volunteer IDs for this visit
+        const declined = await db
+          .select({ volunteerId: assignments.volunteerId })
+          .from(assignments)
+          .where(and(
+            eq(assignments.visitId, assignment.visitId),
+            eq(assignments.assignmentStatus, 'reassigned')
+          ));
+        const excludeIds = declined.map(d => d.volunteerId);
+
+        const [visit] = await db.select().from(visits).where(eq(visits.id, assignment.visitId));
+        if (visit && visit.status === 'WAITING') {
+          const [visitor] = await db.select().from(visitors).where(eq(visitors.id, visit.visitorId));
+          const newAssignment = await reassignVolunteer(
+            { visitId: visit.id, purpose: visit.purpose, language: visitor?.language },
+            excludeIds
+          );
+          if (newAssignment) {
+            io.emit("VolunteerAssigned", {
+              assignmentId: newAssignment.assignmentId,
+              volunteerId: newAssignment.volunteerId,
+              visitId: assignment.visitId,
+              taskType: 'VISITOR_ENGAGEMENT',
+            });
+          }
+        }
+      }
+
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error declining assignment:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // =============================================
+  // 7. COUNSELOR ROUTES
+  // =============================================
+  //
+  // These routes let counselors view and complete their assigned cases.
+  // Permission: COUNSELOR_SELF — all counselor roles (COUNSELOR,
+  // COUNSELOR_YOUNG_PARTNER, COUNSELOR_BUSINESS). Admin can also access
+  // because requireRole() always lets ADMIN through.
+  // =============================================
+
+  /**
+   * GET /api/counselor/me/cases
+   *
+   * Returns visits assigned to the logged-in counselor based on:
+   *   - Legacy sub-roles: filters by the room implied by the role
+   *     (e.g. COUNSELOR_YOUNG_PARTNER → 'Young Partner Plan').
+   *   - Generic COUNSELOR role: filters by the user's assignedRoom field.
+   *   - ADMIN: returns ALL waiting/in-session visits (no filter).
+   *
+   * Permissions: COUNSELOR_SELF (+ ADMIN implicitly)
+   */
+  app.get("/api/counselor/me/cases", requireRole(COUNSELOR_SELF), async (req, res) => {
+    try {
+      const userRole = req.user.role;
+
+      // Determine which room/plan to filter by.
+      // Legacy counselor sub-roles map to a fixed room.
+      // Generic COUNSELOR uses the assignedRoom from their user record.
+      let roomFilter: string | null = getCounselorRoom(userRole);
+
+      if (!roomFilter && userRole !== ROLE_ADMIN) {
+        // Generic COUNSELOR — look up their assignedRoom from the DB
+        const [userRecord] = await db.select({ assignedRoom: users.assignedRoom })
+          .from(users)
+          .where(eq(users.id, req.user.id));
+        roomFilter = userRecord?.assignedRoom ?? null;
+      }
+
+      // Build query: visits that are WAITING or IN_SESSION
+      let query = db
+        .select({
+          visitId: visits.id,
+          purpose: visits.purpose,
+          prayerRequest: visits.prayerRequest,
+          assignedPlan: visits.assignedPlan,
+          status: visits.status,
+          checkInTime: visits.checkInTime,
+          visitor: {
+            id: visitors.id,
+            name: visitors.name,
+            phone: visitors.phone,
+            age: visitors.age,
+            region: visitors.region,
+            language: visitors.language,
+            isReturning: visitors.isReturning,
+          },
+        })
+        .from(visits)
+        .innerJoin(visitors, eq(visits.visitorId, visitors.id))
+        .where(
+          roomFilter
+            ? and(
+                inArray(visits.status, ['WAITING', 'IN_SESSION']),
+                eq(visits.assignedPlan, roomFilter)
+              )
+            : inArray(visits.status, ['WAITING', 'IN_SESSION'])
+        )
+        .orderBy(desc(visits.checkInTime));
+
+      const cases = await query;
+      res.json({ success: true, data: cases });
+    } catch (error) {
+      console.error("Error fetching counselor cases:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  /**
+   * PUT /api/counselor/cases/:id/complete
+   *
+   * Marks a visit as COMPLETED. Sets handledBy to the current user.
+   * Emits a VisitorCompleted socket event for real-time UI updates.
+   *
+   * Permissions: COUNSELOR_SELF (+ ADMIN implicitly)
+   */
+  app.put("/api/counselor/cases/:id/complete", requireRole(COUNSELOR_SELF), async (req, res) => {
+    try {
+      const visitId = parseInt(req.params.id, 10);
+
+      const [updatedVisit] = await db
+        .update(visits)
+        .set({
+          status: 'COMPLETED',
+          completionTime: new Date(),
+          handledBy: req.user.id,
+        })
+        .where(eq(visits.id, visitId))
+        .returning();
+
+      if (!updatedVisit) {
+        return res.status(404).json({ error: "Visit not found" });
+      }
+
+      io.emit("VisitorCompleted", { visitId: updatedVisit.id });
+
+      res.json({ success: true, data: updatedVisit });
+    } catch (error) {
+      console.error("Error completing counselor case:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // =============================================
+  // 8. PRAYER REQUESTS
+  // =============================================
+
+  // Prayer requests — viewable by most staff
+  app.get("/api/prayer-requests", requireRole(CAN_VIEW_PRAYERS), async (req, res) => {
+    try {
+      const prayerRequests = await db
+        .select({
+          visitId: visits.id,
+          prayerRequest: visits.prayerRequest,
+          purpose: visits.purpose,
+          status: visits.status,
+          checkInTime: visits.checkInTime,
+          visitorName: visitors.name,
+          visitorPhone: visitors.phone,
+        })
+        .from(visits)
+        .innerJoin(visitors, eq(visits.visitorId, visitors.id))
+        .where(sql`${visits.prayerRequest} IS NOT NULL AND ${visits.prayerRequest} != ''`)
+        .orderBy(desc(visits.checkInTime));
+
+      res.json({ success: true, data: prayerRequests });
+    } catch (error) {
+      console.error("Error fetching prayer requests:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // =============================================
+  // 9. REPORTS
+  // =============================================
+
+  // Admin-only: comprehensive reports
+  app.get("/api/reports", requireRole(ADMIN_ONLY), async (req, res) => {
+    try {
+      const { startDate, endDate } = req.query;
+
+      // Visitor stats
+      const totalVisitorsResult = await db.select({ count: sql`count(*)`.mapWith(Number) }).from(visitors);
+      const totalVisitors = totalVisitorsResult[0]?.count || 0;
+
+      // Visit stats
+      const totalVisitsResult = await db.select({ count: sql`count(*)`.mapWith(Number) }).from(visits);
+      const totalVisits = totalVisitsResult[0]?.count || 0;
+
+      const completedResult = await db.select({ count: sql`count(*)`.mapWith(Number) }).from(visits).where(eq(visits.status, 'COMPLETED'));
+      const completedVisits = completedResult[0]?.count || 0;
+
+      // Volunteer stats
+      const totalVolunteersResult = await db.select({ count: sql`count(*)`.mapWith(Number) }).from(volunteers);
+      const totalVolunteers = totalVolunteersResult[0]?.count || 0;
+
+      const activeVolunteersResult = await db.select({ count: sql`count(*)`.mapWith(Number) }).from(volunteers).where(eq(volunteers.status, 'active'));
+      const activeVolunteers = activeVolunteersResult[0]?.count || 0;
+
+      const totalAssignmentsResult = await db.select({ count: sql`count(*)`.mapWith(Number) }).from(assignments);
+      const totalAssignments = totalAssignmentsResult[0]?.count || 0;
+
+      const completedAssignmentsResult = await db.select({ count: sql`count(*)`.mapWith(Number) }).from(assignments).where(eq(assignments.assignmentStatus, 'completed'));
+      const completedAssignments = completedAssignmentsResult[0]?.count || 0;
+
+      // Purpose distribution
+      const purposeDistribution = await db.select({
+        purpose: visits.purpose,
+        count: sql`count(*)`.mapWith(Number),
+      }).from(visits).groupBy(visits.purpose);
+
+      // Recent visits
+      const recentVisits = await db
+        .select({
+          visitId: visits.id,
+          purpose: visits.purpose,
+          status: visits.status,
+          checkInTime: visits.checkInTime,
+          completionTime: visits.completionTime,
+          visitorName: visitors.name,
+          visitorRegion: visitors.region,
+        })
+        .from(visits)
+        .innerJoin(visitors, eq(visits.visitorId, visitors.id))
+        .orderBy(desc(visits.checkInTime))
+        .limit(50);
+
+      res.json({
+        success: true,
+        data: {
+          summary: {
+            totalVisitors,
+            totalVisits,
+            completedVisits,
+            totalVolunteers,
+            activeVolunteers,
+            totalAssignments,
+            completedAssignments,
+          },
+          purposeDistribution: purposeDistribution.map(p => ({ name: p.purpose, value: p.count })),
+          recentVisits,
+        },
+      });
+    } catch (error) {
+      console.error("Error generating reports:", error);
+      res.status(500).json({ error: "Internal server error" });
     }
   });
 

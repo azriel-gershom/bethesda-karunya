@@ -5,10 +5,23 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { io } from 'socket.io-client';
+import { API_URL } from './config/api';
 import { motion, AnimatePresence } from 'motion/react';
 import AdminDashboard from './components/AdminDashboard';
+import VolunteerDashboard from './components/VolunteerDashboard';
 import LoginScreen from './components/LoginScreen';
 import VisitorIntakeModal from './components/VisitorIntakeModal';
+import {
+  isCounselor,
+  isFrontDesk,
+  isVolunteer,
+  isAdmin,
+  getRoleLabel,
+  getCounselorRoom,
+  ROLE_ADMIN,
+  ROLE_COUNSELOR_YOUNG_PARTNER,
+  ROLE_COUNSELOR_BUSINESS,
+} from './shared/roles';
 import {
   Building2,
   LayoutDashboard,
@@ -141,13 +154,27 @@ export default function App() {
   const [activeNav, setActiveNav] = useState('dashboard');
   const [intakeOpen, setIntakeOpen] = useState(false);
 
-  // Parse role for UI
+  // ── Role-based view routing ──────────────────────────
+  // Uses helpers from src/shared/roles.ts.
+  // These determine which dashboard/view the user sees after login.
+  //
+  // View mapping:
+  //   ADMIN                    → AdminDashboard (full command center)
+  //   EMPLOYEE / RECEPTIONIST  → Receptionist view (intake + queue)
+  //   COUNSELOR / COUNSELOR_*  → Counselor view (assigned cases)
+  //   VOLUNTEER                → VolunteerDashboard (tasks + profile)
+  // ────────────────────────────────────────────────────
   let roleUI = 'Receptionist';
   if (user) {
-    if (user.role === 'ADMIN') roleUI = 'Main Admin';
-    if (user.role === 'RECEPTIONIST') roleUI = 'Receptionist';
-    if (user.role === 'COUNSELOR_YOUNG_PARTNER') roleUI = 'Young Partner Room';
-    if (user.role === 'COUNSELOR_BUSINESS') roleUI = 'Business Blessing';
+    if (isAdmin(user.role))      roleUI = 'Main Admin';
+    else if (isVolunteer(user.role)) roleUI = 'Volunteer';
+    else if (isCounselor(user.role)) {
+      // Display a descriptive label based on the specific counselor sub-role
+      if (user.role === ROLE_COUNSELOR_YOUNG_PARTNER) roleUI = 'Young Partner Room';
+      else if (user.role === ROLE_COUNSELOR_BUSINESS)  roleUI = 'Business Blessing';
+      else roleUI = 'Counselor'; // Generic COUNSELOR role
+    }
+    else if (isFrontDesk(user.role)) roleUI = 'Receptionist';
   }
 
   // Fetch the live waitlist from the API
@@ -155,7 +182,7 @@ export default function App() {
     if (!token) return;
     try {
       setLoading(true);
-      const res = await fetch('/api/queue', {
+      const res = await fetch(`${API_URL}/api/queue`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       const json = await res.json();
@@ -176,7 +203,7 @@ export default function App() {
     const doFetch = async () => {
       try {
         setLoading(true);
-        const res = await fetch('/api/queue', {
+        const res = await fetch(`${API_URL}/api/queue`, {
           headers: { 'Authorization': `Bearer ${token}` }
         });
         const json = await res.json();
@@ -192,7 +219,7 @@ export default function App() {
     doFetch();
 
     // 2. Setup WebSocket Connection
-    const socket = io();
+    const socket = io(API_URL);
 
     socket.on('connect', () => {
       console.log('Connected to real-time sync server');
@@ -218,7 +245,7 @@ export default function App() {
   // Post real data to the API via the intake modal
   const handleAddVisitor = async (payload: any) => {
     try {
-      const res = await fetch('/api/visitors', {
+      const res = await fetch(`${API_URL}/api/visitors`, {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
@@ -239,7 +266,7 @@ export default function App() {
 
   const handleCompleteVisit = async (visitId: number) => {
     try {
-      const res = await fetch(`/api/visits/${visitId}/complete`, {
+      const res = await fetch(`${API_URL}/api/visits/${visitId}/complete`, {
         method: 'PUT',
         headers: { 'Authorization': `Bearer ${token}` }
       });
@@ -346,9 +373,11 @@ export default function App() {
           </div>
         </motion.nav>
 
-        {/* Main Content Grid */}
+        {/* Main Content — routed by roleUI */}
         {roleUI === 'Main Admin' ? (
            <AdminDashboard token={token} />
+        ) : roleUI === 'Volunteer' ? (
+           <VolunteerDashboard token={token} user={user} />
         ) : roleUI === 'Receptionist' ? (
         <main className="flex-1 p-6 grid grid-cols-1 md:grid-cols-12 grid-rows-6 gap-6 overflow-y-auto">
           {/* Stats Row */}
@@ -597,8 +626,11 @@ export default function App() {
             </div>
           </motion.section>
         </main>
-        ) : (
+        ) : isCounselor(user.role) ? (
           /* ============== COUNSELOR VIEW ============== */
+          /* Counselors see visits filtered to their room/plan.              */
+          /* Legacy sub-roles (YP, Business) filter by their fixed room.    */
+          /* Generic COUNSELOR uses the user's assignedRoom.                */
           <main className="flex-1 p-6 overflow-y-auto bg-zinc-950">
              <div className="max-w-6xl mx-auto flex flex-col gap-6">
                 <motion.div 
