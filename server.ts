@@ -1136,6 +1136,360 @@ async function startServer() {
       res.status(500).json({ error: "Internal server error" });
     }
   });
+  // =============================================
+  // 10. ADMIN VOLUNTEER ROUTES
+  // =============================================
+
+  // GET /api/admin/volunteers
+  app.get("/api/admin/volunteers", requireRole(ADMIN_ONLY), async (req, res) => {
+    try {
+      const allVols = await db
+        .select({
+          id: volunteers.id,
+          userId: volunteers.userId,
+          name: users.name,
+          email: users.email,
+          phone: volunteers.phone,
+          department: volunteers.department,
+          status: volunteers.status,
+          maxTasksPerDay: volunteers.maxTasksPerDay,
+        })
+        .from(volunteers)
+        .innerJoin(users, eq(volunteers.userId, users.id));
+
+      const volIds = allVols.map((v) => v.id);
+      
+      let allLangs: any[] = [];
+      let allAvail: any[] = [];
+      let activeAssignments: any[] = [];
+      
+      if (volIds.length > 0) {
+        allLangs = await db.select().from(volunteerLanguages).where(inArray(volunteerLanguages.volunteerId, volIds));
+        allAvail = await db.select().from(volunteerAvailability).where(inArray(volunteerAvailability.volunteerId, volIds));
+        activeAssignments = await db.select({ volunteerId: assignments.volunteerId, count: sql`count(*)`.mapWith(Number) })
+          .from(assignments)
+          .where(and(inArray(assignments.volunteerId, volIds), inArray(assignments.assignmentStatus, ['pending', 'accepted', 'in_progress'])))
+          .groupBy(assignments.volunteerId);
+      }
+
+      const activeCounts = new Map<number, number>();
+      for (const a of activeAssignments) {
+        activeCounts.set(a.volunteerId, a.count);
+      }
+
+      const formatted = allVols.map((v) => ({
+        ...v,
+        languages: allLangs.filter(l => l.volunteerId === v.id).map(l => l.language),
+        availability: allAvail.filter(a => a.volunteerId === v.id),
+        activeAssignmentCount: activeCounts.get(v.id) || 0,
+      }));
+
+      res.json({ success: true, data: formatted });
+    } catch (error) {
+      console.error("Error fetching admin volunteers:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // POST /api/admin/volunteers
+  app.post("/api/admin/volunteers", requireRole(ADMIN_ONLY), async (req, res) => {
+    try {
+      const { name, email, password, phone, department, languages, availability, maxTasksPerDay } = req.body;
+      
+      if (!name || !email || !password) {
+        return res.status(400).json({ error: "Name, email, and password are required" });
+      }
+
+      const result = await db.transaction(async (tx) => {
+        const hash = await bcrypt.hash(password, 10);
+        const [newUser] = await tx.insert(users).values({
+          name,
+          email,
+          passwordHash: hash,
+          role: 'VOLUNTEER'
+        }).returning();
+
+        const [newVol] = await tx.insert(volunteers).values({
+          userId: newUser.id,
+          fullName: name,
+          phone: phone || null,
+          department: department || 'General',
+          status: 'active',
+          maxTasksPerDay: maxTasksPerDay ?? 5,
+        }).returning();
+
+        if (languages && languages.length > 0) {
+          await tx.insert(volunteerLanguages).values(
+            languages.map((l: string) => ({ volunteerId: newVol.id, language: l }))
+          );
+        }
+
+        if (availability && availability.length > 0) {
+          await tx.insert(volunteerAvailability).values(
+            availability.map((a: any) => ({
+              volunteerId: newVol.id,
+              dayOfWeek: a.dayOfWeek,
+              startTime: a.startTime || '00:00',
+              endTime: a.endTime || '23:59',
+              isAvailable: !!a.isAvailable,
+            }))
+          );
+        }
+        
+        return { userId: newUser.id, volunteerId: newVol.id };
+      });
+      
+      res.status(201).json({ success: true, data: result });
+    } catch (error) {
+      console.error("Error creating admin volunteer:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // PUT /api/admin/volunteers/:id
+  app.put("/api/admin/volunteers/:id", requireRole(ADMIN_ONLY), async (req, res) => {
+    try {
+      const volunteerId = parseInt(req.params.id, 10);
+      const { name, email, phone, department, status, maxTasksPerDay, languages, availability } = req.body;
+      
+      const [vol] = await db.select().from(volunteers).where(eq(volunteers.id, volunteerId));
+      if (!vol) return res.status(404).json({ error: "Volunteer not found" });
+
+      await db.transaction(async (tx) => {
+        if (name || email) {
+          const userUpdate: any = {};
+          if (name) userUpdate.name = name;
+          if (email) userUpdate.email = email;
+          await tx.update(users).set(userUpdate).where(eq(users.id, vol.userId));
+        }
+
+        const volUpdate: any = {};
+        if (name) volUpdate.fullName = name;
+        if (phone !== undefined) volUpdate.phone = phone;
+        if (department !== undefined) volUpdate.department = department;
+        if (status !== undefined) volUpdate.status = status;
+        if (maxTasksPerDay !== undefined) volUpdate.maxTasksPerDay = maxTasksPerDay;
+        
+        if (Object.keys(volUpdate).length > 0) {
+          await tx.update(volunteers).set(volUpdate).where(eq(volunteers.id, volunteerId));
+        }
+
+        if (languages !== undefined) {
+          await tx.delete(volunteerLanguages).where(eq(volunteerLanguages.volunteerId, volunteerId));
+          if (languages.length > 0) {
+            await tx.insert(volunteerLanguages).values(
+              languages.map((l: string) => ({ volunteerId, language: l }))
+            );
+          }
+        }
+
+        if (availability !== undefined) {
+          await tx.delete(volunteerAvailability).where(eq(volunteerAvailability.volunteerId, volunteerId));
+          if (availability.length > 0) {
+            await tx.insert(volunteerAvailability).values(
+              availability.map((a: any) => ({
+                volunteerId,
+                dayOfWeek: a.dayOfWeek,
+                startTime: a.startTime || '00:00',
+                endTime: a.endTime || '23:59',
+                isAvailable: !!a.isAvailable,
+              }))
+            );
+          }
+        }
+      });
+      
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error updating admin volunteer:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // PATCH /api/admin/volunteers/:id/deactivate
+  app.patch("/api/admin/volunteers/:id/deactivate", requireRole(ADMIN_ONLY), async (req, res) => {
+    try {
+      const volunteerId = parseInt(req.params.id, 10);
+      const [updated] = await db.update(volunteers).set({ status: 'inactive' }).where(eq(volunteers.id, volunteerId)).returning();
+      if (!updated) return res.status(404).json({ error: "Volunteer not found" });
+      res.json({ success: true, data: updated });
+    } catch (error) {
+      console.error("Error deactivating volunteer:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+  // =============================================
+  // 11. NEW VOLUNTEER DASHBOARD ROUTES
+  // =============================================
+
+  // 1. GET /api/volunteer/my-assignments
+  app.get("/api/volunteer/my-assignments", requireRole(VOLUNTEER_SELF), async (req, res) => {
+    try {
+      const [vol] = await db.select().from(volunteers).where(eq(volunteers.userId, req.user.id));
+      if (!vol) return res.status(404).json({ error: "Volunteer profile not found" });
+
+      const assignmentsList = await db
+        .select({
+          id: assignments.id,
+          visitId: assignments.visitId,
+          status: assignments.assignmentStatus,
+          notes: assignments.notes,
+          assignedAt: assignments.assignedAt,
+          completedAt: assignments.completedAt,
+          visitorName: visitors.name,
+          visitorPhone: visitors.phone,
+          visitorLanguage: visitors.language,
+          visitPurpose: visits.purpose,
+          visitPrayerRequest: visits.prayerRequest,
+          visitStatus: visits.status,
+        })
+        .from(assignments)
+        .leftJoin(visits, eq(assignments.visitId, visits.id))
+        .leftJoin(visitors, eq(visits.visitorId, visitors.id))
+        .where(eq(assignments.volunteerId, vol.id))
+        .orderBy(desc(assignments.assignedAt));
+
+      res.json({ success: true, data: assignmentsList });
+    } catch (error) {
+      console.error("Error fetching my assignments:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // 2. PUT /api/volunteer/assignments/:id/accept
+  app.put("/api/volunteer/assignments/:id/accept", requireRole(VOLUNTEER_SELF), async (req, res) => {
+    try {
+      const assignmentId = parseInt(req.params.id, 10);
+      const [vol] = await db.select().from(volunteers).where(eq(volunteers.userId, req.user.id));
+      if (!vol) return res.status(404).json({ error: "Volunteer profile not found" });
+
+      const [assignment] = await db.select().from(assignments).where(eq(assignments.id, assignmentId));
+      if (!assignment) return res.status(404).json({ error: "Assignment not found" });
+      if (assignment.volunteerId !== vol.id) return res.status(403).json({ error: "Not your assignment" });
+
+      const [updated] = await db
+        .update(assignments)
+        .set({ assignmentStatus: 'accepted' })
+        .where(eq(assignments.id, assignmentId))
+        .returning();
+
+      io.emit("AssignmentUpdated", { assignmentId, status: 'accepted' });
+
+      res.json({ success: true, data: updated });
+    } catch (error) {
+      console.error("Error accepting assignment:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // 3. PUT /api/volunteer/assignments/:id/start
+  app.put("/api/volunteer/assignments/:id/start", requireRole(VOLUNTEER_SELF), async (req, res) => {
+    try {
+      const assignmentId = parseInt(req.params.id, 10);
+      const [vol] = await db.select().from(volunteers).where(eq(volunteers.userId, req.user.id));
+      if (!vol) return res.status(404).json({ error: "Volunteer profile not found" });
+
+      const [assignment] = await db.select().from(assignments).where(eq(assignments.id, assignmentId));
+      if (!assignment) return res.status(404).json({ error: "Assignment not found" });
+      if (assignment.volunteerId !== vol.id) return res.status(403).json({ error: "Not your assignment" });
+
+      const [updated] = await db
+        .update(assignments)
+        .set({ assignmentStatus: 'in_progress' })
+        .where(eq(assignments.id, assignmentId))
+        .returning();
+
+      io.emit("AssignmentUpdated", { assignmentId, status: 'in_progress' });
+
+      res.json({ success: true, data: updated });
+    } catch (error) {
+      console.error("Error starting assignment:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // 4. PUT /api/volunteer/assignments/:id/complete
+  app.put("/api/volunteer/assignments/:id/complete", requireRole(VOLUNTEER_SELF), async (req, res) => {
+    try {
+      const assignmentId = parseInt(req.params.id, 10);
+      const { notes } = req.body;
+      const [vol] = await db.select().from(volunteers).where(eq(volunteers.userId, req.user.id));
+      if (!vol) return res.status(404).json({ error: "Volunteer profile not found" });
+
+      const [assignment] = await db.select().from(assignments).where(eq(assignments.id, assignmentId));
+      if (!assignment) return res.status(404).json({ error: "Assignment not found" });
+      if (assignment.volunteerId !== vol.id) return res.status(403).json({ error: "Not your assignment" });
+
+      const [updated] = await db
+        .update(assignments)
+        .set({ assignmentStatus: 'completed', completedAt: new Date(), notes: notes || assignment.notes })
+        .where(eq(assignments.id, assignmentId))
+        .returning();
+
+      io.emit("AssignmentUpdated", { assignmentId, status: 'completed' });
+
+      res.json({ success: true, data: updated });
+    } catch (error) {
+      console.error("Error completing assignment:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // 5. PUT /api/volunteer/availability
+  app.put("/api/volunteer/availability", requireRole(VOLUNTEER_SELF), async (req, res) => {
+    try {
+      const { availability } = req.body; // array of { dayOfWeek, startTime, endTime, isAvailable }
+      if (!Array.isArray(availability)) return res.status(400).json({ error: "Availability must be an array" });
+
+      const [vol] = await db.select().from(volunteers).where(eq(volunteers.userId, req.user.id));
+      if (!vol) return res.status(404).json({ error: "Volunteer profile not found" });
+
+      await db.transaction(async (tx) => {
+        await tx.delete(volunteerAvailability).where(eq(volunteerAvailability.volunteerId, vol.id));
+        if (availability.length > 0) {
+          await tx.insert(volunteerAvailability).values(
+            availability.map((a: any) => ({
+              volunteerId: vol.id,
+              dayOfWeek: a.dayOfWeek,
+              startTime: a.startTime || '00:00',
+              endTime: a.endTime || '23:59',
+              isAvailable: !!a.isAvailable,
+            }))
+          );
+        }
+      });
+
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error updating availability:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // 6. PUT /api/volunteer/languages
+  app.put("/api/volunteer/languages", requireRole(VOLUNTEER_SELF), async (req, res) => {
+    try {
+      const { languages } = req.body; // array of strings
+      if (!Array.isArray(languages)) return res.status(400).json({ error: "Languages must be an array" });
+
+      const [vol] = await db.select().from(volunteers).where(eq(volunteers.userId, req.user.id));
+      if (!vol) return res.status(404).json({ error: "Volunteer profile not found" });
+
+      await db.transaction(async (tx) => {
+        await tx.delete(volunteerLanguages).where(eq(volunteerLanguages.volunteerId, vol.id));
+        if (languages.length > 0) {
+          await tx.insert(volunteerLanguages).values(
+            languages.map((l: string) => ({ volunteerId: vol.id, language: l }))
+          );
+        }
+      });
+
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error updating languages:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
 
   // Vite middleware for development (MUST be after API routes)
   if (process.env.NODE_ENV !== "production") {
