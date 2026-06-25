@@ -258,6 +258,7 @@ export default function App() {
         console.error("Failed to add visitor", errorData);
         throw new Error(errorData.error || 'Failed to add visitor');
       }
+      return await res.json();
     } catch (err) {
       console.error("Error posting visitor", err);
       throw err;

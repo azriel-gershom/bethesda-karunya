@@ -83,10 +83,12 @@ export default function VolunteerDashboard({ token, user }: { token: string; use
   const [showHistory, setShowHistory] = useState(false);
   const [completionNotes, setCompletionNotes] = useState<Record<number, string>>({});
   const [refreshing, setRefreshing] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [editingLanguages, setEditingLanguages] = useState('');
 
   const fetchAssignments = async () => {
     try {
-      const res = await fetch(`${API_URL}/api/volunteers/me/assignments`, {
+      const res = await fetch(`${API_URL}/api/volunteer/my-assignments`, {
         headers: { 'Authorization': `Bearer ${token}` },
       });
       const json = await res.json();
@@ -98,9 +100,7 @@ export default function VolunteerDashboard({ token, user }: { token: string; use
 
   const fetchProfile = async () => {
     try {
-      // Profile data comes from availability endpoint (we can infer from toggle)
-      // For now we read assignments and check if volunteer exists
-      const res = await fetch(`${API_URL}/api/volunteers/me/assignments`, {
+      const res = await fetch(`${API_URL}/api/volunteer/my-assignments`, {
         headers: { 'Authorization': `Bearer ${token}` },
       });
       // We don't have a direct profile GET endpoint, so we'll use availability toggle to sync
@@ -133,10 +133,12 @@ export default function VolunteerDashboard({ token, user }: { token: string; use
 
   const toggleAvailability = async (newState: boolean) => {
     try {
-      await fetch(`${API_URL}/api/volunteers/me/availability`, {
+      const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+      const today = days[new Date().getDay()];
+      await fetch(`${API_URL}/api/volunteer/availability`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify({ isAvailable: newState }),
+        body: JSON.stringify({ availability: [{ dayOfWeek: today, startTime: '00:00', endTime: '23:59', isAvailable: newState }] }),
       });
       setProfile(prev => prev ? { ...prev, isAvailable: newState } : prev);
     } catch (err) {
@@ -144,10 +146,25 @@ export default function VolunteerDashboard({ token, user }: { token: string; use
     }
   };
 
+  const updateLanguages = async () => {
+    try {
+      const langs = editingLanguages.split(',').map(s => s.trim()).filter(Boolean);
+      await fetch(`${API_URL}/api/volunteer/languages`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ languages: langs }),
+      });
+      setShowSettings(false);
+      setProfile(prev => prev ? { ...prev, languages: langs } : prev);
+    } catch (err) {
+      console.error('Failed to update languages', err);
+    }
+  };
+
   const acceptAssignment = async (id: number) => {
     setActionLoading(id);
     try {
-      await fetch(`${API_URL}/api/assignments/${id}/accept`, {
+      await fetch(`${API_URL}/api/volunteer/assignments/${id}/accept`, {
         method: 'PUT',
         headers: { 'Authorization': `Bearer ${token}` },
       });
@@ -162,7 +179,7 @@ export default function VolunteerDashboard({ token, user }: { token: string; use
   const completeAssignment = async (id: number) => {
     setActionLoading(id);
     try {
-      await fetch(`${API_URL}/api/assignments/${id}/complete`, {
+      await fetch(`${API_URL}/api/volunteer/assignments/${id}/complete`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify({ notes: completionNotes[id] || '' }),
@@ -176,10 +193,10 @@ export default function VolunteerDashboard({ token, user }: { token: string; use
     }
   };
 
-  const declineAssignment = async (id: number) => {
+  const startAssignment = async (id: number) => {
     setActionLoading(id);
     try {
-      await fetch(`${API_URL}/api/assignments/${id}/decline`, {
+      await fetch(`${API_URL}/api/volunteer/assignments/${id}/start`, {
         method: 'PUT',
         headers: { 'Authorization': `Bearer ${token}` },
       });
@@ -249,6 +266,14 @@ export default function VolunteerDashboard({ token, user }: { token: string; use
             </motion.button>
 
             {/* Availability Toggle */}
+            <motion.button
+              onClick={() => setShowSettings(true)}
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+              className="px-4 py-2 rounded-xl text-sm font-bold flex items-center gap-2 transition-all cursor-pointer border bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-cyan-400"
+            >
+              <Languages className="w-5 h-5" /> PREFERENCES
+            </motion.button>
             <motion.button
               onClick={handleToggle}
               whileHover={{ scale: 1.02 }}
@@ -398,24 +423,26 @@ export default function VolunteerDashboard({ token, user }: { token: string; use
                             disabled={actionLoading === assignment.id}
                             whileHover={{ scale: 1.02 }}
                             whileTap={{ scale: 0.97 }}
-                            className="flex-1 py-2.5 bg-emerald-900/30 hover:bg-emerald-800/50 text-emerald-400 text-sm font-bold rounded-xl transition-all border border-emerald-800/40 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                            className="w-full py-2.5 bg-emerald-900/30 hover:bg-emerald-800/50 text-emerald-400 text-sm font-bold rounded-xl transition-all border border-emerald-800/40 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
                           >
                             {actionLoading === assignment.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
                             ACCEPT
                           </motion.button>
-                          <motion.button
-                            onClick={() => declineAssignment(assignment.id)}
-                            disabled={actionLoading === assignment.id}
-                            whileHover={{ scale: 1.02 }}
-                            whileTap={{ scale: 0.97 }}
-                            className="flex-1 py-2.5 bg-zinc-900/50 hover:bg-red-900/30 text-zinc-500 hover:text-red-400 text-sm font-bold rounded-xl transition-all border border-zinc-800/40 hover:border-red-800/40 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
-                          >
-                            <XCircle className="w-4 h-4" />
-                            DECLINE
-                          </motion.button>
                         </>
                       )}
                       {assignment.status === 'ACCEPTED' && (
+                        <motion.button
+                          onClick={() => startAssignment(assignment.id)}
+                          disabled={actionLoading === assignment.id}
+                          whileHover={{ scale: 1.02 }}
+                          whileTap={{ scale: 0.97 }}
+                          className="w-full py-2.5 bg-cyan-900/30 hover:bg-cyan-800/50 text-cyan-400 text-sm font-bold rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer border border-cyan-800/40 disabled:opacity-50"
+                        >
+                          {actionLoading === assignment.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                          START SESSION
+                        </motion.button>
+                      )}
+                      {assignment.status === 'IN_PROGRESS' && (
                         <motion.button
                           onClick={() => completeAssignment(assignment.id)}
                           disabled={actionLoading === assignment.id}
@@ -493,6 +520,29 @@ export default function VolunteerDashboard({ token, user }: { token: string; use
           </div>
         )}
       </div>
+
+      {/* Settings Modal */}
+      <AnimatePresence>
+        {showSettings && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+            <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.9 }} className="w-full max-w-sm glass-card p-6 relative">
+              <button onClick={() => setShowSettings(false)} className="absolute top-4 right-4 text-zinc-500 hover:text-white cursor-pointer"><XCircle className="w-5 h-5" /></button>
+              <h3 className="text-xl font-bold text-white mb-6 flex items-center gap-2">
+                <Languages className="w-5 h-5 text-emerald-500" /> My Preferences
+              </h3>
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <label className="text-xs uppercase text-zinc-500 font-bold">Languages Spoken (comma separated)</label>
+                  <input type="text" placeholder="English, Spanish, Hindi..." value={editingLanguages} onChange={e => setEditingLanguages(e.target.value)} className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-4 py-2 text-white" />
+                </div>
+                <button onClick={updateLanguages} className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg transition-colors cursor-pointer">
+                  Save Preferences
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

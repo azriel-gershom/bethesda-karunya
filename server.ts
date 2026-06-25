@@ -4,7 +4,7 @@ import cors from "cors";
 import { createServer as createViteServer } from "vite";
 import { db } from "./src/db/index.js";
 import { users, visitors, visits, volunteers, assignments, volunteerLanguages, volunteerAvailability } from "./src/db/schema.js";
-import { eq, desc, sql, and, ne, inArray } from "drizzle-orm";
+import { eq, desc, sql, and, ne, inArray, isNull } from "drizzle-orm";
 import { assignVolunteer, reassignVolunteer } from "./src/services/volunteerAssigner.js";
 import { createServer } from "http";
 import { Server } from "socket.io";
@@ -507,6 +507,30 @@ async function startServer() {
       }).from(visits).groupBy(visits.assignedPlan);
       const planStats = planStatsRaw.map((s: any) => ({ name: s.plan || 'Unassigned', value: s.count }));
 
+      // 6. Language Distribution
+      const langStatsRaw = await db.select({
+        language: visitors.language,
+        count: sql`count(*)`.mapWith(Number)
+      }).from(visitors).groupBy(visitors.language);
+      const languageStats = langStatsRaw.map((s: any) => ({ name: s.language || 'Unknown', value: s.count }));
+
+      // 7. Employee and Volunteer Counts
+      const employeeCounts = await db.select({ count: sql`count(*)`.mapWith(Number) }).from(users).where(ne(users.role, 'VOLUNTEER'));
+      const activeEmployees = employeeCounts[0]?.count || 0;
+
+      const volunteerCounts = await db.select({ count: sql`count(*)`.mapWith(Number) }).from(volunteers).where(eq(volunteers.status, 'active'));
+      const activeVolunteers = volunteerCounts[0]?.count || 0;
+
+      // 8. Assignments Counts
+      const pendingAssign = await db.select({ count: sql`count(*)`.mapWith(Number) }).from(assignments).where(eq(assignments.assignmentStatus, 'pending'));
+      const pendingAssignments = pendingAssign[0]?.count || 0;
+
+      const unassignedRaw = await db.select({ count: sql`count(*)`.mapWith(Number) })
+        .from(visits)
+        .leftJoin(assignments, eq(visits.id, assignments.visitId))
+        .where(and(eq(visits.status, 'WAITING'), isNull(assignments.id)));
+      const unassignedVisits = unassignedRaw[0]?.count || 0;
+
       // Mock Average Wait Time for now
       const averageWaitTime = "12m";
 
@@ -517,11 +541,16 @@ async function startServer() {
             totalVisitors,
             activeWaiting,
             completedSessions,
-            averageWaitTime
+            averageWaitTime,
+            activeEmployees,
+            activeVolunteers,
+            pendingAssignments,
+            unassignedVisits
           },
           regionStats,
           ageStats,
-          planStats
+          planStats,
+          languageStats
         }
       });
     } catch (error) {

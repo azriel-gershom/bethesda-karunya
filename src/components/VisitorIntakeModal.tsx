@@ -27,6 +27,7 @@ export default function VisitorIntakeModal({ isOpen, onClose, onSubmit }: Visito
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
   const [success, setSuccess] = useState(false);
+  const [assignmentInfo, setAssignmentInfo] = useState<{ status: string, volunteerId?: number } | null>(null);
 
   const validate = () => {
     const errs: Record<string, string> = {};
@@ -43,16 +44,23 @@ export default function VisitorIntakeModal({ isOpen, onClose, onSubmit }: Visito
 
     setSubmitting(true);
     try {
-      await onSubmit({
+      const response = await onSubmit({
         ...formData,
         age: formData.age ? parseInt(formData.age, 10) : null,
       });
       setSuccess(true);
+      if (response) {
+        setAssignmentInfo({
+          status: response.assignmentStatus || 'UNASSIGNED',
+          volunteerId: response.assignedVolunteer?.volunteerId
+        });
+      }
       setTimeout(() => {
         setSuccess(false);
+        setAssignmentInfo(null);
         setFormData({ name: '', phone: '', age: '', region: '', language: '', purpose: '', prayerRequest: '', assignedPlan: '' });
         onClose();
-      }, 1500);
+      }, 3500);
     } catch (err) {
       console.error('Intake error', err);
     } finally {
@@ -110,6 +118,26 @@ export default function VisitorIntakeModal({ isOpen, onClose, onSubmit }: Visito
                   >
                     Visitor Checked In!
                   </motion.p>
+                  {assignmentInfo && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: 0.4 }}
+                      className="mt-3 p-3 bg-zinc-900/80 border border-zinc-800 rounded-xl flex items-center justify-center min-w-[250px]"
+                    >
+                      <span className="text-xs uppercase font-bold tracking-wider text-zinc-400">Queue Status:</span>
+                      <span className={`ml-2 px-2 py-0.5 rounded text-[10px] font-bold ${
+                        assignmentInfo.status === 'ASSIGNED' 
+                          ? 'bg-emerald-900/30 text-emerald-400 border border-emerald-800/40' 
+                          : 'bg-amber-900/30 text-amber-400 border border-amber-800/40'
+                      }`}>
+                        {assignmentInfo.status}
+                      </span>
+                      {assignmentInfo.volunteerId && (
+                         <span className="ml-2 text-xs text-zinc-500 font-mono">Vol #{assignmentInfo.volunteerId}</span>
+                      )}
+                    </motion.div>
+                  )}
                 </motion.div>
               )}
             </AnimatePresence>

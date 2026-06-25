@@ -17,6 +17,7 @@ import {
 } from 'recharts';
 import { Users, Activity, CheckCircle, Clock, RefreshCw, TrendingUp, Heart, FileText, Shield } from 'lucide-react';
 import ManageUsersPanel from './admin/ManageUsersPanel';
+import ManageVolunteersPanel from './admin/ManageVolunteersPanel';
 import PrayerRequestsPanel from './admin/PrayerRequestsPanel';
 import ReportsPanel from './admin/ReportsPanel';
 
@@ -85,7 +86,7 @@ export default function AdminDashboard({ token }: { token: string }) {
   const [stats, setStats] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [activeTab, setActiveTab] = useState<'overview' | 'users' | 'prayers' | 'reports'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'users' | 'volunteers' | 'prayers' | 'reports'>('overview');
 
   const fetchStats = async () => {
     try {
@@ -150,11 +151,15 @@ export default function AdminDashboard({ token }: { token: string }) {
     );
   }
 
-  const { metrics, regionStats, ageStats, planStats } = stats;
+  const { metrics, regionStats, ageStats, planStats, languageStats } = stats;
   
   const totalVisitors = useAnimatedCounter(metrics.totalVisitors);
   const activeWaiting = useAnimatedCounter(metrics.activeWaiting);
   const completedSessions = useAnimatedCounter(metrics.completedSessions);
+  const activeEmployees = useAnimatedCounter(metrics.activeEmployees || 0);
+  const activeVolunteers = useAnimatedCounter(metrics.activeVolunteers || 0);
+  const pendingAssignments = useAnimatedCounter(metrics.pendingAssignments || 0);
+  const unassignedVisits = useAnimatedCounter(metrics.unassignedVisits || 0);
 
   return (
     <div className="flex-1 p-6 overflow-y-auto bg-zinc-950 flex flex-col gap-6">
@@ -188,10 +193,11 @@ export default function AdminDashboard({ token }: { token: string }) {
       </motion.div>
 
       {/* Tab Navigation */}
-      <div className="flex gap-1 p-1 bg-zinc-900/60 rounded-xl border border-zinc-800/50 w-fit">
+      <div className="flex gap-1 p-1 bg-zinc-900/60 rounded-xl border border-zinc-800/50 w-fit flex-wrap">
         {[
           { key: 'overview' as const, label: 'Overview', icon: Activity },
           { key: 'users' as const, label: 'Manage Users', icon: Shield },
+          { key: 'volunteers' as const, label: 'Manage Volunteers', icon: Users },
           { key: 'prayers' as const, label: 'Prayer Requests', icon: Heart },
           { key: 'reports' as const, label: 'Reports', icon: FileText },
         ].map((tab) => (
@@ -213,6 +219,8 @@ export default function AdminDashboard({ token }: { token: string }) {
       {/* Tab Content */}
       {activeTab === 'users' ? (
         <ManageUsersPanel token={token} />
+      ) : activeTab === 'volunteers' ? (
+        <ManageVolunteersPanel token={token} />
       ) : activeTab === 'prayers' ? (
         <PrayerRequestsPanel token={token} />
       ) : activeTab === 'reports' ? (
@@ -225,11 +233,15 @@ export default function AdminDashboard({ token }: { token: string }) {
         <KPICard icon={Users} label="Total Visitors" value={totalVisitors} color="text-cyan-400" glowClass="glow-cyan" index={0} />
         <KPICard icon={Activity} label="Active Queue" value={activeWaiting} color="text-amber-300" glowClass="glow-amber" index={1} />
         <KPICard icon={CheckCircle} label="Completed Sessions" value={completedSessions} color="text-emerald-400" glowClass="glow-emerald" index={2} />
-        <KPICard icon={Clock} label="Avg Wait Time" value={metrics.averageWaitTime} color="text-blue-400" glowClass="glow-violet" index={3} />
+        <KPICard icon={Users} label="Active Employees" value={activeEmployees} color="text-blue-400" glowClass="glow-blue" index={3} />
+        <KPICard icon={Heart} label="Active Volunteers" value={activeVolunteers} color="text-emerald-400" glowClass="glow-emerald" index={4} />
+        <KPICard icon={FileText} label="Pending Assigns" value={pendingAssignments} color="text-amber-400" glowClass="glow-amber" index={5} />
+        <KPICard icon={Activity} label="Unassigned Visits" value={unassignedVisits} color="text-red-400" glowClass="glow-red" index={6} />
+        <KPICard icon={Clock} label="Avg Wait Time" value={metrics.averageWaitTime} color="text-violet-400" glowClass="glow-violet" index={7} />
       </div>
 
       {/* Middle Row: Demographics */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
         <motion.div 
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -289,6 +301,35 @@ export default function AdminDashboard({ token }: { token: string }) {
                 <Tooltip content={<CustomTooltip />} />
                 <Legend verticalAlign="bottom" height={36} iconType="circle" wrapperStyle={{ fontSize: '11px', color: '#a1a1aa' }}/>
               </PieChart>
+            </ResponsiveContainer>
+          </div>
+        </motion.div>
+
+        <motion.div 
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.6, duration: 0.5 }}
+          className="bg-zinc-900/70 border border-zinc-800/60 rounded-xl p-6 backdrop-blur-sm"
+        >
+          <h3 className="text-sm font-semibold text-zinc-300 mb-6 flex items-center gap-2">
+            <TrendingUp className="w-4 h-4 text-emerald-500" />
+            Language Requests
+          </h3>
+          <div className="h-[250px] w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={languageStats} layout="vertical" margin={{ top: 0, right: 0, left: 20, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#27272a" />
+                <XAxis type="number" fontSize={10} tickLine={false} axisLine={false} stroke="#71717a" />
+                <YAxis dataKey="name" type="category" fontSize={11} tickLine={false} axisLine={false} stroke="#a1a1aa" width={80} />
+                <Tooltip content={<CustomTooltip />} cursor={{fill: 'rgba(16, 185, 129, 0.03)'}} />
+                <defs>
+                  <linearGradient id="langGradient" x1="0" y1="0" x2="1" y2="0">
+                    <stop offset="0%" stopColor="#10b981" />
+                    <stop offset="100%" stopColor="#34d399" />
+                  </linearGradient>
+                </defs>
+                <Bar dataKey="value" fill="url(#langGradient)" radius={[0, 6, 6, 0]} barSize={20} />
+              </BarChart>
             </ResponsiveContainer>
           </div>
         </motion.div>
