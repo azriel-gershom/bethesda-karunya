@@ -5,7 +5,14 @@ import { X, UserPlus, Phone, MapPin, Calendar, Heart, BookOpen, CheckCircle, Lan
 interface VisitorIntakeModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSubmit: (payload: any) => Promise<void>;
+  onSubmit: (payload: any) => Promise<VisitorIntakeResponse>;
+}
+
+interface VisitorIntakeResponse {
+  assignmentStatus?: string;
+  assignedVolunteer?: {
+    volunteerId?: number;
+  } | null;
 }
 
 const REGIONS = ['North America', 'South America', 'Europe', 'Africa', 'Asia', 'Middle East', 'Oceania', 'Other'];

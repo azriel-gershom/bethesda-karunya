@@ -153,6 +153,8 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [activeNav, setActiveNav] = useState('dashboard');
   const [intakeOpen, setIntakeOpen] = useState(false);
+  const [socketStatus, setSocketStatus] = useState<'connecting' | 'active' | 'offline'>('offline');
+  const [systemHealth, setSystemHealth] = useState<{ dbStatus?: string; mode?: string } | null>(null);
 
   // ── Role-based view routing ──────────────────────────
   // Uses helpers from src/shared/roles.ts.
@@ -176,6 +178,37 @@ export default function App() {
     }
     else if (isFrontDesk(user.role)) roleUI = 'Receptionist';
   }
+  const counselorPlan = user && isCounselor(user.role)
+    ? getCounselorRoom(user.role) || user.assignedRoom || null
+    : null;
+  const visibleCounselorQueue = counselorPlan
+    ? queue.filter(visit => visit.assignedPlan === counselorPlan)
+    : queue;
+
+  const dbStatusLabel = systemHealth?.mode === 'demo' || systemHealth?.dbStatus === 'demo'
+    ? 'Demo Data Mode'
+    : systemHealth?.dbStatus === 'connected'
+    ? 'PostgreSQL: Connected'
+    : systemHealth?.dbStatus === 'error'
+    ? 'PostgreSQL: Offline'
+    : 'Database: Checking';
+  const dbStatusDotClass = systemHealth?.mode === 'demo' || systemHealth?.dbStatus === 'demo'
+    ? 'bg-amber-400 shadow-[0_0_8px_rgba(245,158,11,0.55)]'
+    : systemHealth?.dbStatus === 'connected'
+    ? 'bg-emerald-500/70'
+    : systemHealth?.dbStatus === 'error'
+    ? 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.55)]'
+    : 'bg-zinc-600';
+  const socketStatusLabel = socketStatus === 'active'
+    ? 'SOCKET.IO ACTIVE'
+    : socketStatus === 'connecting'
+    ? 'SOCKET.IO CONNECTING'
+    : 'SOCKET.IO OFFLINE';
+  const socketDotClass = socketStatus === 'active'
+    ? 'bg-emerald-400'
+    : socketStatus === 'connecting'
+    ? 'bg-amber-400'
+    : 'bg-red-500';
 
   // Fetch the live waitlist from the API
   const fetchQueue = async () => {
@@ -199,6 +232,8 @@ export default function App() {
   useEffect(() => {
     if (!token) return;
 
+    setSocketStatus('connecting');
+
     // 1. Initial Fetch (inlined to avoid stale closure / missing dep warning)
     const doFetch = async () => {
       try {
@@ -218,11 +253,32 @@ export default function App() {
     };
     doFetch();
 
+    const fetchHealth = async () => {
+      try {
+        const res = await fetch(`${API_URL}/api/health`);
+        const json = await res.json();
+        setSystemHealth({ dbStatus: json.dbStatus, mode: json.mode });
+      } catch (err) {
+        console.error("Failed to fetch system health", err);
+        setSystemHealth({ dbStatus: 'error' });
+      }
+    };
+    fetchHealth();
+
     // 2. Setup WebSocket Connection
     const socket = io(API_URL);
 
     socket.on('connect', () => {
       console.log('Connected to real-time sync server');
+      setSocketStatus('active');
+    });
+
+    socket.on('disconnect', () => {
+      setSocketStatus('offline');
+    });
+
+    socket.on('connect_error', () => {
+      setSocketStatus('offline');
     });
 
     socket.on('VisitorAdded', (newVisit) => {
@@ -279,13 +335,13 @@ export default function App() {
     }
   };
 
-  if (!token) {
-    return <LoginScreen onLogin={(t, u) => { setToken(t); setUser(u); }} />;
-  }
-
   // Animated counters for stats
   const totalCount = useAnimatedCounter(queue.length > 0 ? 1428 : 0);
   const counselorCount = useAnimatedCounter(42);
+
+  if (!token) {
+    return <LoginScreen onLogin={(t, u) => { setToken(t); setUser(u); }} />;
+  }
 
   return (
     <div className="w-full h-screen bg-zinc-950 text-zinc-100 flex flex-col font-sans overflow-hidden select-none">
@@ -337,12 +393,14 @@ export default function App() {
           <div className="flex flex-col items-end">
             <div className="flex items-center gap-2">
               <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                {socketStatus === 'active' && <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>}
+                <span className={`relative inline-flex rounded-full h-2 w-2 ${socketDotClass}`}></span>
               </span>
-              <span className="text-[10px] font-mono text-emerald-400">SOCKET.IO ACTIVE</span>
+              <span className={`text-[10px] font-mono ${
+                socketStatus === 'active' ? 'text-emerald-400' : socketStatus === 'connecting' ? 'text-amber-400' : 'text-red-400'
+              }`}>{socketStatusLabel}</span>
             </div>
-            <span className="text-[9px] text-zinc-600">SYNC DELAY: 12ms</span>
+            <span className="text-[9px] text-zinc-600">{dbStatusLabel}</span>
           </div>
           <div className="h-8 w-px bg-zinc-800"></div>
           <div className="flex items-center gap-3">
@@ -648,15 +706,13 @@ export default function App() {
                   </div>
                   <div className="px-4 py-2 bg-zinc-900/80 border border-zinc-800 rounded-lg text-xs font-mono text-cyan-400 flex items-center gap-2 backdrop-blur-sm">
                     <span className="w-2 h-2 rounded-full bg-cyan-500 animate-pulse"></span>
-                    {queue.filter(v => v.assignedPlan === (roleUI === 'Young Partner Room' ? 'Young Partner Plan' : 'Business Blessing')).length} WAITING
+                    {visibleCounselorQueue.length} WAITING
                   </div>
                 </motion.div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
                   <AnimatePresence>
-                    {queue
-                      .filter(visit => visit.assignedPlan === (roleUI === 'Young Partner Room' ? 'Young Partner Plan' : 'Business Blessing'))
-                      .map((visit, index) => (
+                    {visibleCounselorQueue.map((visit, index) => (
                         <motion.div 
                           key={visit.visitId} 
                           initial={{ opacity: 0, scale: 0.95, y: 15 }}
@@ -709,7 +765,7 @@ export default function App() {
                     ))}
                   </AnimatePresence>
                   
-                  {queue.filter(visit => visit.assignedPlan === (roleUI === 'Young Partner Room' ? 'Young Partner Plan' : 'Business Blessing')).length === 0 && (
+                  {visibleCounselorQueue.length === 0 && (
                     <motion.div 
                       initial={{ opacity: 0 }}
                       animate={{ opacity: 1 }}
@@ -726,7 +782,7 @@ export default function App() {
                 </div>
              </div>
           </main>
-        )}
+        ) : null}
       </div>
 
       {/* Bottom Status Bar */}
@@ -739,9 +795,9 @@ export default function App() {
             </span>
           </div>
           <div className="flex items-center gap-2">
-            <div className="w-1.5 h-1.5 rounded-full bg-emerald-500/70"></div>
+            <div className={`w-1.5 h-1.5 rounded-full ${dbStatusDotClass}`}></div>
             <span className="text-[9px] text-zinc-500 uppercase tracking-widest font-bold">
-              PostgreSQL: Connected
+              {dbStatusLabel}
             </span>
           </div>
         </div>

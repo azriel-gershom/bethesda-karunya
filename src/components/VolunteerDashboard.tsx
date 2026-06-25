@@ -134,8 +134,7 @@ export default function VolunteerDashboard({ token, user }: { token: string; use
 
   const toggleAvailability = async (newState: boolean) => {
     try {
-      const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-      const today = days[new Date().getDay()];
+      const today = new Date().getDay();
       await fetch(`${API_URL}/api/volunteer/availability`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },

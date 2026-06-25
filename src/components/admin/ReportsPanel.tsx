@@ -1,8 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { API_URL } from '../../config/api';
 import { motion } from 'motion/react';
 import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Cell
 } from 'recharts';
 import {
   FileText, Users, HandHeart, CheckCircle, Activity, TrendingUp, Loader2, Clock
@@ -20,6 +20,55 @@ function CustomTooltip({ active, payload, label }: any) {
           Count: <span className="font-bold">{entry.value}</span>
         </p>
       ))}
+    </div>
+  );
+}
+
+function ChartFrame({
+  children,
+}: {
+  children: (size: { width: number; height: number }) => React.ReactNode;
+}) {
+  const frameRef = useRef<HTMLDivElement | null>(null);
+  const [size, setSize] = useState({ width: 0, height: 0 });
+
+  useEffect(() => {
+    let frameId = 0;
+    const updateSize = () => {
+      const rect = frameRef.current?.getBoundingClientRect();
+      if (!rect) return;
+
+      const nextSize = {
+        width: Math.floor(rect.width),
+        height: Math.floor(rect.height),
+      };
+
+      if (nextSize.width <= 0 || nextSize.height <= 0) return;
+
+      setSize((current) =>
+        current.width === nextSize.width && current.height === nextSize.height
+          ? current
+          : nextSize
+      );
+    };
+
+    frameId = requestAnimationFrame(updateSize);
+    const resizeObserver = new ResizeObserver(updateSize);
+    if (frameRef.current) resizeObserver.observe(frameRef.current);
+
+    return () => {
+      cancelAnimationFrame(frameId);
+      resizeObserver.disconnect();
+    };
+  }, []);
+
+  return (
+    <div ref={frameRef} className="h-[250px] min-h-[250px] w-full min-w-0">
+      {size.width > 0 && size.height > 0 ? (
+        children(size)
+      ) : (
+        <div className="h-full w-full shimmer rounded-xl opacity-30" />
+      )}
     </div>
   );
 }
@@ -126,8 +175,9 @@ export default function ReportsPanel({ token }: { token: string }) {
         </h4>
         <div className="h-[250px] w-full">
           {purposeDistribution.length > 0 ? (
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={purposeDistribution} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+            <ChartFrame>
+              {({ width, height }) => (
+              <BarChart width={width} height={height} data={purposeDistribution} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#27272a" />
                 <XAxis dataKey="name" fontSize={11} tickLine={false} axisLine={false} stroke="#a1a1aa" />
                 <YAxis fontSize={10} tickLine={false} axisLine={false} stroke="#71717a" />
@@ -138,7 +188,8 @@ export default function ReportsPanel({ token }: { token: string }) {
                   ))}
                 </Bar>
               </BarChart>
-            </ResponsiveContainer>
+              )}
+            </ChartFrame>
           ) : (
             <div className="h-full flex items-center justify-center text-zinc-600 text-sm">No data yet</div>
           )}

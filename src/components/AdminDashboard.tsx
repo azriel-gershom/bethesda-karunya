@@ -1,21 +1,20 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
 import { API_URL } from '../config/api';
 import { motion } from 'motion/react';
 import {
-  BarChart,
+  BarChart as RechartsBarChart,
   Bar,
   XAxis,
   YAxis,
   CartesianGrid,
   Tooltip,
-  ResponsiveContainer,
-  PieChart,
+  PieChart as RechartsPieChart,
   Pie,
   Cell,
   Legend
 } from 'recharts';
-import { Users, Activity, CheckCircle, Clock, RefreshCw, TrendingUp, Heart, FileText, Shield } from 'lucide-react';
+import { Users, Activity, CheckCircle, Clock, RefreshCw, TrendingUp, Heart, FileText, Shield, BarChart2 } from 'lucide-react';
 import ManageUsersPanel from './admin/ManageUsersPanel';
 import ManageVolunteersPanel from './admin/ManageVolunteersPanel';
 import PrayerRequestsPanel from './admin/PrayerRequestsPanel';
@@ -82,6 +81,57 @@ function CustomTooltip({ active, payload, label }: any) {
   );
 }
 
+function ChartFrame({
+  children,
+  className = '',
+}: {
+  children: (size: { width: number; height: number }) => React.ReactNode;
+  className?: string;
+}) {
+  const frameRef = useRef<HTMLDivElement | null>(null);
+  const [size, setSize] = useState({ width: 0, height: 0 });
+
+  useEffect(() => {
+    let frameId = 0;
+    const updateSize = () => {
+      const rect = frameRef.current?.getBoundingClientRect();
+      if (!rect) return;
+
+      const nextSize = {
+        width: Math.floor(rect.width),
+        height: Math.floor(rect.height),
+      };
+
+      if (nextSize.width <= 0 || nextSize.height <= 0) return;
+
+      setSize((current) =>
+        current.width === nextSize.width && current.height === nextSize.height
+          ? current
+          : nextSize
+      );
+    };
+
+    frameId = requestAnimationFrame(updateSize);
+    const resizeObserver = new ResizeObserver(updateSize);
+    if (frameRef.current) resizeObserver.observe(frameRef.current);
+
+    return () => {
+      cancelAnimationFrame(frameId);
+      resizeObserver.disconnect();
+    };
+  }, []);
+
+  return (
+    <div ref={frameRef} className={`h-[250px] min-h-[250px] w-full min-w-0 ${className}`}>
+      {size.width > 0 && size.height > 0 ? (
+        children(size)
+      ) : (
+        <div className="h-full w-full shimmer rounded-xl opacity-30" />
+      )}
+    </div>
+  );
+}
+
 export default function AdminDashboard({ token }: { token: string }) {
   const [stats, setStats] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -130,6 +180,20 @@ export default function AdminDashboard({ token }: { token: string }) {
     fetchStats();
   };
 
+  const metrics = stats?.metrics ?? {};
+  const regionStats = stats?.regionStats ?? [];
+  const ageStats = stats?.ageStats ?? [];
+  const planStats = stats?.planStats ?? [];
+  const languageStats = stats?.languageStats ?? [];
+  
+  const totalVisitors = useAnimatedCounter(metrics.totalVisitors || 0);
+  const activeWaiting = useAnimatedCounter(metrics.activeWaiting || 0);
+  const completedSessions = useAnimatedCounter(metrics.completedSessions || 0);
+  const activeEmployees = useAnimatedCounter(metrics.activeEmployees || 0);
+  const activeVolunteers = useAnimatedCounter(metrics.activeVolunteers || 0);
+  const pendingAssignments = useAnimatedCounter(metrics.pendingAssignments || 0);
+  const unassignedVisits = useAnimatedCounter(metrics.unassignedVisits || 0);
+
   if (loading || !stats) {
     return (
       <div className="flex-1 p-6 flex items-center justify-center bg-zinc-950">
@@ -150,16 +214,6 @@ export default function AdminDashboard({ token }: { token: string }) {
       </div>
     );
   }
-
-  const { metrics, regionStats, ageStats, planStats, languageStats } = stats;
-  
-  const totalVisitors = useAnimatedCounter(metrics.totalVisitors);
-  const activeWaiting = useAnimatedCounter(metrics.activeWaiting);
-  const completedSessions = useAnimatedCounter(metrics.completedSessions);
-  const activeEmployees = useAnimatedCounter(metrics.activeEmployees || 0);
-  const activeVolunteers = useAnimatedCounter(metrics.activeVolunteers || 0);
-  const pendingAssignments = useAnimatedCounter(metrics.pendingAssignments || 0);
-  const unassignedVisits = useAnimatedCounter(metrics.unassignedVisits || 0);
 
   return (
     <div className="flex-1 p-6 overflow-y-auto bg-zinc-950 flex flex-col gap-6">
@@ -252,9 +306,9 @@ export default function AdminDashboard({ token }: { token: string }) {
             <TrendingUp className="w-4 h-4 text-cyan-500" />
             Regional Breakdown
           </h3>
-          <div className="h-[250px] w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={regionStats} layout="vertical" margin={{ top: 0, right: 0, left: 20, bottom: 0 }}>
+          <ChartFrame>
+            {({ width, height }) => (
+              <RechartsBarChart width={width} height={height} data={regionStats} layout="vertical" margin={{ top: 0, right: 0, left: 20, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#27272a" />
                 <XAxis type="number" fontSize={10} tickLine={false} axisLine={false} stroke="#71717a" />
                 <YAxis dataKey="name" type="category" fontSize={11} tickLine={false} axisLine={false} stroke="#a1a1aa" width={80} />
@@ -266,9 +320,9 @@ export default function AdminDashboard({ token }: { token: string }) {
                   </linearGradient>
                 </defs>
                 <Bar dataKey="value" fill="url(#barGradient)" radius={[0, 6, 6, 0]} barSize={20} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
+              </RechartsBarChart>
+            )}
+          </ChartFrame>
         </motion.div>
 
         <motion.div 
@@ -281,9 +335,9 @@ export default function AdminDashboard({ token }: { token: string }) {
             <Users className="w-4 h-4 text-violet-400" />
             Age Demographics
           </h3>
-          <div className="h-[250px] w-full flex items-center justify-center">
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
+          <ChartFrame className="flex items-center justify-center">
+            {({ width, height }) => (
+              <RechartsPieChart width={width} height={height}>
                 <Pie
                   data={ageStats}
                   cx="50%"
@@ -300,9 +354,9 @@ export default function AdminDashboard({ token }: { token: string }) {
                 </Pie>
                 <Tooltip content={<CustomTooltip />} />
                 <Legend verticalAlign="bottom" height={36} iconType="circle" wrapperStyle={{ fontSize: '11px', color: '#a1a1aa' }}/>
-              </PieChart>
-            </ResponsiveContainer>
-          </div>
+              </RechartsPieChart>
+            )}
+          </ChartFrame>
         </motion.div>
 
         <motion.div 
@@ -315,9 +369,9 @@ export default function AdminDashboard({ token }: { token: string }) {
             <TrendingUp className="w-4 h-4 text-emerald-500" />
             Language Requests
           </h3>
-          <div className="h-[250px] w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={languageStats} layout="vertical" margin={{ top: 0, right: 0, left: 20, bottom: 0 }}>
+          <ChartFrame>
+            {({ width, height }) => (
+              <RechartsBarChart width={width} height={height} data={languageStats} layout="vertical" margin={{ top: 0, right: 0, left: 20, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#27272a" />
                 <XAxis type="number" fontSize={10} tickLine={false} axisLine={false} stroke="#71717a" />
                 <YAxis dataKey="name" type="category" fontSize={11} tickLine={false} axisLine={false} stroke="#a1a1aa" width={80} />
@@ -329,9 +383,9 @@ export default function AdminDashboard({ token }: { token: string }) {
                   </linearGradient>
                 </defs>
                 <Bar dataKey="value" fill="url(#langGradient)" radius={[0, 6, 6, 0]} barSize={20} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
+              </RechartsBarChart>
+            )}
+          </ChartFrame>
         </motion.div>
       </div>
 
@@ -343,12 +397,12 @@ export default function AdminDashboard({ token }: { token: string }) {
         className="bg-zinc-900/70 border border-zinc-800/60 rounded-xl p-6 backdrop-blur-sm"
       >
         <h3 className="text-sm font-semibold text-zinc-300 mb-6 flex items-center gap-2">
-          <BarChart className="w-4 h-4 text-violet-400" />
+          <BarChart2 className="w-4 h-4 text-violet-400" />
           Assigned Plan Distribution
         </h3>
-        <div className="h-[250px] w-full">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={planStats} margin={{ top: 20, right: 20, left: 0, bottom: 0 }}>
+        <ChartFrame>
+          {({ width, height }) => (
+            <RechartsBarChart width={width} height={height} data={planStats} margin={{ top: 20, right: 20, left: 0, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#27272a" />
               <XAxis dataKey="name" fontSize={11} tickLine={false} axisLine={false} stroke="#a1a1aa" />
               <YAxis fontSize={10} tickLine={false} axisLine={false} stroke="#71717a" />
@@ -368,9 +422,9 @@ export default function AdminDashboard({ token }: { token: string }) {
                   <Cell key={`cell-${index}`} fill={index % 2 === 0 ? 'url(#planGradient1)' : 'url(#planGradient2)'} />
                 ))}
               </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
+            </RechartsBarChart>
+          )}
+        </ChartFrame>
       </motion.div>
       </>
       )}

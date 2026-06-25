@@ -1,3 +1,4 @@
+import "dotenv/config";
 import express from "express";
 import path from "path";
 import cors from "cors";
@@ -12,7 +13,11 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import {
   ROLE_ADMIN,
+  ROLE_RECEPTIONIST,
   ROLE_EMPLOYEE,
+  ROLE_COUNSELOR,
+  ROLE_COUNSELOR_YOUNG_PARTNER,
+  ROLE_COUNSELOR_BUSINESS,
   ROLE_VOLUNTEER,
   CAN_ADD_VISITORS,
   CAN_VIEW_QUEUE,
@@ -92,6 +97,654 @@ function requireRole(allowedRoles: readonly string[]) {
       return res.status(401).json({ error: "Invalid token" });
     }
   };
+}
+
+type DemoUser = {
+  id: number;
+  name: string;
+  email: string;
+  password: string;
+  role: string;
+  assignedRoom: string | null;
+  createdAt: Date;
+};
+
+type DemoVisitor = {
+  id: number;
+  name: string;
+  phone: string;
+  age: number | null;
+  region: string | null;
+  language: string | null;
+  isReturning: boolean;
+};
+
+type DemoVisit = {
+  id: number;
+  visitorId: number;
+  purpose: string;
+  prayerRequest: string | null;
+  assignedPlan: string | null;
+  status: string;
+  checkInTime: Date;
+  completionTime: Date | null;
+  handledBy: number | null;
+};
+
+type DemoVolunteer = {
+  id: number;
+  userId: number;
+  fullName: string;
+  phone: string | null;
+  department: string | null;
+  status: string;
+  maxTasksPerDay: number;
+  languages: string[];
+  availability: Array<{ dayOfWeek: number; startTime: string; endTime: string; isAvailable: boolean }>;
+  createdAt: Date;
+};
+
+type DemoAssignment = {
+  id: number;
+  visitId: number | null;
+  volunteerId: number;
+  assignmentStatus: string;
+  notes: string | null;
+  assignedAt: Date;
+  completedAt: Date | null;
+};
+
+async function shouldUseDemoData() {
+  if (process.env.DEMO_MODE === "true") return true;
+  if (process.env.DEMO_MODE === "false" || process.env.NODE_ENV === "production") return false;
+
+  try {
+    await db.execute(sql`select 1 as result`);
+    return false;
+  } catch (error) {
+    console.warn("Database unavailable; using in-memory demo data for local development.");
+    return true;
+  }
+}
+
+function createDemoApi(io: Server) {
+  const router = express.Router();
+  const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000);
+  const daysAgo = (days: number) => new Date(Date.now() - days * 24 * 60 * 60_000);
+
+  let nextUserId = 8;
+  let nextVisitorId = 4;
+  let nextVisitId = 4;
+  let nextVolunteerId = 2;
+  let nextAssignmentId = 2;
+
+  const demoUsers: DemoUser[] = [
+    { id: 1, name: "Super Admin", email: "admin", password: "admin123", role: ROLE_ADMIN, assignedRoom: null, createdAt: daysAgo(42) },
+    { id: 2, name: "Staff Member", email: "employee", password: "employee123", role: ROLE_EMPLOYEE, assignedRoom: null, createdAt: daysAgo(28) },
+    { id: 3, name: "Front Desk", email: "reception", password: "reception123", role: ROLE_RECEPTIONIST, assignedRoom: null, createdAt: daysAgo(26) },
+    { id: 4, name: "General Counselor", email: "counselor", password: "counselor123", role: ROLE_COUNSELOR, assignedRoom: "General", createdAt: daysAgo(24) },
+    { id: 5, name: "Young Partner Counselor", email: "counselor_yp", password: "counselor123", role: ROLE_COUNSELOR_YOUNG_PARTNER, assignedRoom: "Young Partner Plan", createdAt: daysAgo(24) },
+    { id: 6, name: "Business Blessing Counselor", email: "counselor_bb", password: "counselor123", role: ROLE_COUNSELOR_BUSINESS, assignedRoom: "Business Blessing", createdAt: daysAgo(24) },
+    { id: 7, name: "Test Volunteer", email: "volunteer", password: "volunteer123", role: ROLE_VOLUNTEER, assignedRoom: null, createdAt: daysAgo(20) },
+  ];
+
+  const demoVisitors: DemoVisitor[] = [
+    { id: 1, name: "Sarah Tan", phone: "+1 555-0101", age: 34, region: "Asia", language: "English", isReturning: false },
+    { id: 2, name: "Joseph Martin", phone: "+1 555-0102", age: 47, region: "Europe", language: "Tamil", isReturning: true },
+    { id: 3, name: "Priya Nair", phone: "+1 555-0103", age: 29, region: "North America", language: "Malayalam", isReturning: false },
+  ];
+
+  const demoVisits: DemoVisit[] = [
+    { id: 1, visitorId: 1, purpose: "Business Consultation", prayerRequest: "Guidance for a new venture.", assignedPlan: "Business Blessing", status: "WAITING", checkInTime: minutesAgo(9), completionTime: null, handledBy: null },
+    { id: 2, visitorId: 2, purpose: "Counseling", prayerRequest: "Family restoration and clarity.", assignedPlan: "Young Partner Plan", status: "WAITING", checkInTime: minutesAgo(18), completionTime: null, handledBy: null },
+    { id: 3, visitorId: 3, purpose: "Prayer", prayerRequest: "Health and travel protection.", assignedPlan: "General", status: "COMPLETED", checkInTime: minutesAgo(90), completionTime: minutesAgo(52), handledBy: 4 },
+  ];
+
+  const demoVolunteers: DemoVolunteer[] = [
+    {
+      id: 1,
+      userId: 7,
+      fullName: "Test Volunteer",
+      phone: "123-456-7890",
+      department: "Visitor Engagement",
+      status: "active",
+      maxTasksPerDay: 5,
+      languages: ["English", "Hindi", "Tamil"],
+      availability: [{ dayOfWeek: new Date().getDay(), startTime: "00:00", endTime: "23:59", isAvailable: true }],
+      createdAt: daysAgo(20),
+    },
+  ];
+
+  const demoAssignments: DemoAssignment[] = [
+    { id: 1, visitId: 1, volunteerId: 1, assignmentStatus: "pending", notes: null, assignedAt: minutesAgo(8), completedAt: null },
+  ];
+
+  const getUserFromRequest = (req: express.Request) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) return null;
+    try {
+      return jwt.verify(authHeader.split(" ")[1], JWT_SECRET) as { id: number; role: string; name: string };
+    } catch {
+      return null;
+    }
+  };
+
+  const demoRequireRole = (allowedRoles: readonly string[]) => {
+    return (req: express.Request, res: express.Response, next: express.NextFunction) => {
+      const decoded = getUserFromRequest(req);
+      if (!decoded) return res.status(401).json({ error: "Unauthorized" });
+      if (decoded.role !== ROLE_ADMIN && !allowedRoles.includes(decoded.role)) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+      req.user = decoded;
+      next();
+    };
+  };
+
+  const publicUser = (user: DemoUser) => ({
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    role: user.role,
+    assignedRoom: user.assignedRoom,
+    createdAt: user.createdAt,
+  });
+
+  const findVisitor = (id: number) => demoVisitors.find((visitor) => visitor.id === id);
+  const findVisit = (id: number | null) => id ? demoVisits.find((visit) => visit.id === id) : undefined;
+
+  const queueItem = (visit: DemoVisit) => ({
+    visitId: visit.id,
+    purpose: visit.purpose,
+    prayerRequest: visit.prayerRequest,
+    assignedPlan: visit.assignedPlan,
+    status: visit.status,
+    checkInTime: visit.checkInTime,
+    visitor: findVisitor(visit.visitorId),
+  });
+
+  const assignmentItem = (assignment: DemoAssignment) => {
+    const visit = findVisit(assignment.visitId);
+    const visitor = visit ? findVisitor(visit.visitorId) : undefined;
+
+    return {
+      id: assignment.id,
+      visitId: assignment.visitId,
+      taskType: "VISITOR_ENGAGEMENT",
+      status: assignment.assignmentStatus.toUpperCase(),
+      notes: assignment.notes,
+      assignedAt: assignment.assignedAt,
+      acceptedAt: assignment.assignmentStatus !== "pending" ? assignment.assignedAt : null,
+      completedAt: assignment.completedAt,
+      visitorName: visitor?.name ?? null,
+      visitorPhone: visitor?.phone ?? null,
+      visitorLanguage: visitor?.language ?? null,
+      visitPurpose: visit?.purpose ?? null,
+      visitPrayerRequest: visit?.prayerRequest ?? null,
+      visitStatus: visit?.status ?? null,
+    };
+  };
+
+  const listQueue = () => demoVisits
+    .filter((visit) => visit.status === "WAITING")
+    .sort((a, b) => b.checkInTime.getTime() - a.checkInTime.getTime())
+    .map(queueItem);
+
+  const activeAssignmentCount = (volunteerId: number) => demoAssignments
+    .filter((assignment) => assignment.volunteerId === volunteerId && ["pending", "accepted", "in_progress"].includes(assignment.assignmentStatus))
+    .length;
+
+  const listAdminVolunteers = () => demoVolunteers.map((volunteer) => {
+    const user = demoUsers.find((u) => u.id === volunteer.userId);
+    return {
+      id: volunteer.id,
+      userId: volunteer.userId,
+      name: user?.name ?? volunteer.fullName,
+      email: user?.email ?? "",
+      phone: volunteer.phone,
+      department: volunteer.department,
+      status: volunteer.status,
+      maxTasksPerDay: volunteer.maxTasksPerDay,
+      languages: volunteer.languages,
+      availability: volunteer.availability,
+      activeAssignmentCount: activeAssignmentCount(volunteer.id),
+      createdAt: volunteer.createdAt,
+    };
+  });
+
+  const assignDemoVolunteer = (visit: DemoVisit, language: string | null) => {
+    const volunteer = demoVolunteers.find((candidate) => {
+      const hasCapacity = activeAssignmentCount(candidate.id) < candidate.maxTasksPerDay;
+      const isAvailable = candidate.status === "active" && candidate.availability.some((slot) => slot.isAvailable);
+      const speaksLanguage = !language || candidate.languages.includes(language) || candidate.languages.includes("English");
+      return hasCapacity && isAvailable && speaksLanguage;
+    });
+
+    if (!volunteer) return null;
+
+    const assignment: DemoAssignment = {
+      id: nextAssignmentId++,
+      visitId: visit.id,
+      volunteerId: volunteer.id,
+      assignmentStatus: "pending",
+      notes: null,
+      assignedAt: new Date(),
+      completedAt: null,
+    };
+    demoAssignments.unshift(assignment);
+    return { assignmentId: assignment.id, volunteerId: volunteer.id };
+  };
+
+  const completeVisit = (visitId: number, handledBy: number) => {
+    const visit = demoVisits.find((candidate) => candidate.id === visitId);
+    if (!visit) return null;
+    visit.status = "COMPLETED";
+    visit.completionTime = new Date();
+    visit.handledBy = handledBy;
+    demoAssignments
+      .filter((assignment) => assignment.visitId === visitId)
+      .forEach((assignment) => {
+        assignment.assignmentStatus = "completed";
+        assignment.completedAt = new Date();
+      });
+    return visit;
+  };
+
+  const chartRows = (rows: Array<string | null>) => {
+    const counts = new Map<string, number>();
+    rows.forEach((name) => counts.set(name || "Unknown", (counts.get(name || "Unknown") ?? 0) + 1));
+    return Array.from(counts.entries()).map(([name, value]) => ({ name, value }));
+  };
+
+  router.get("/health", (_req, res) => {
+    res.json({ status: "ok", dbStatus: "demo", mode: "demo" });
+  });
+
+  router.post("/auth/login", (req, res) => {
+    const { email, password } = req.body;
+    const user = demoUsers.find((candidate) => candidate.email === email && candidate.password === password);
+    if (!user) return res.status(401).json({ error: "Invalid credentials" });
+
+    const token = jwt.sign(
+      { id: user.id, role: user.role, name: user.name },
+      JWT_SECRET,
+      { expiresIn: "8h" }
+    );
+
+    res.json({ token, user: publicUser(user) });
+  });
+
+  router.get("/queue", demoRequireRole(CAN_VIEW_QUEUE), (_req, res) => {
+    res.json({ success: true, data: listQueue() });
+  });
+
+  router.post("/visitors", demoRequireRole(CAN_ADD_VISITORS), (req, res) => {
+    const { name, phone, age, region, language, purpose, prayerRequest, assignedPlan } = req.body;
+    if (!name || !phone || !purpose) {
+      return res.status(400).json({ error: "Missing required fields: name, phone, purpose" });
+    }
+
+    let visitor = demoVisitors.find((candidate) => candidate.phone === phone);
+    if (visitor) {
+      visitor.isReturning = true;
+      visitor.age = age ?? visitor.age;
+      visitor.region = region || visitor.region;
+      visitor.language = language || visitor.language;
+    } else {
+      visitor = {
+        id: nextVisitorId++,
+        name,
+        phone,
+        age: age ?? null,
+        region: region || null,
+        language: language || null,
+        isReturning: false,
+      };
+      demoVisitors.push(visitor);
+    }
+
+    const visit: DemoVisit = {
+      id: nextVisitId++,
+      visitorId: visitor.id,
+      purpose,
+      prayerRequest: prayerRequest || null,
+      assignedPlan: assignedPlan || null,
+      status: "WAITING",
+      checkInTime: new Date(),
+      completionTime: null,
+      handledBy: null,
+    };
+    demoVisits.unshift(visit);
+
+    io.emit("VisitorAdded", queueItem(visit));
+
+    const assignedVolunteer = assignDemoVolunteer(visit, language || null);
+    if (assignedVolunteer) {
+      io.emit("VolunteerAssigned", {
+        assignmentId: assignedVolunteer.assignmentId,
+        volunteerId: assignedVolunteer.volunteerId,
+        visitId: visit.id,
+        taskType: "VISITOR_ENGAGEMENT",
+      });
+    }
+
+    res.status(201).json({
+      success: true,
+      visitorId: visitor.id,
+      visitId: visit.id,
+      status: visit.status,
+      checkInTime: visit.checkInTime,
+      isReturning: visitor.isReturning,
+      assignedVolunteer,
+      assignmentStatus: assignedVolunteer ? "ASSIGNED" : "UNASSIGNED",
+    });
+  });
+
+  router.put("/visits/:id/complete", demoRequireRole(CAN_COMPLETE_VISIT), (req, res) => {
+    const updated = completeVisit(parseInt(req.params.id, 10), req.user!.id);
+    if (!updated) return res.status(404).json({ error: "Visit not found" });
+    io.emit("VisitorCompleted", { visitId: updated.id });
+    res.json({ success: true, data: updated });
+  });
+
+  router.get("/stats", demoRequireRole(ADMIN_ONLY), (_req, res) => {
+    const completedSessions = demoVisits.filter((visit) => visit.status === "COMPLETED").length;
+    const activeWaiting = demoVisits.filter((visit) => visit.status === "WAITING").length;
+    const pendingAssignments = demoAssignments.filter((assignment) => assignment.assignmentStatus === "pending").length;
+    const assignedVisitIds = new Set(demoAssignments.map((assignment) => assignment.visitId));
+
+    res.json({
+      success: true,
+      data: {
+        metrics: {
+          totalVisitors: demoVisitors.length,
+          activeWaiting,
+          completedSessions,
+          averageWaitTime: activeWaiting ? "9m" : "0m",
+          activeEmployees: demoUsers.filter((user) => user.role !== ROLE_VOLUNTEER).length,
+          activeVolunteers: demoVolunteers.filter((volunteer) => volunteer.status === "active").length,
+          pendingAssignments,
+          unassignedVisits: demoVisits.filter((visit) => visit.status === "WAITING" && !assignedVisitIds.has(visit.id)).length,
+        },
+        regionStats: chartRows(demoVisitors.map((visitor) => visitor.region)),
+        ageStats: chartRows(demoVisitors.map((visitor) => {
+          if (!visitor.age) return "Unknown";
+          if (visitor.age <= 25) return "18-25";
+          if (visitor.age <= 40) return "26-40";
+          if (visitor.age <= 60) return "41-60";
+          return "60+";
+        })),
+        planStats: chartRows(demoVisits.map((visit) => visit.assignedPlan)),
+        languageStats: chartRows(demoVisitors.map((visitor) => visitor.language)),
+      },
+    });
+  });
+
+  router.get("/users", demoRequireRole(ADMIN_ONLY), (_req, res) => {
+    res.json({ success: true, data: demoUsers.map(publicUser).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()) });
+  });
+
+  router.post("/users", demoRequireRole(ADMIN_ONLY), (req, res) => {
+    const { name, email, password, role, assignedRoom, languages, categories } = req.body;
+    if (!name || !email || !password || !role) {
+      return res.status(400).json({ error: "Missing required fields: name, email, password, role" });
+    }
+    if (demoUsers.some((user) => user.email === email)) {
+      return res.status(409).json({ error: "A user with this email/username already exists" });
+    }
+
+    const user: DemoUser = {
+      id: nextUserId++,
+      name,
+      email,
+      password,
+      role,
+      assignedRoom: assignedRoom || null,
+      createdAt: new Date(),
+    };
+    demoUsers.unshift(user);
+
+    if (role === ROLE_VOLUNTEER) {
+      demoVolunteers.unshift({
+        id: nextVolunteerId++,
+        userId: user.id,
+        fullName: name,
+        phone: null,
+        department: categories?.[0] || "General",
+        status: "active",
+        maxTasksPerDay: 5,
+        languages: Array.isArray(languages) ? languages : [],
+        availability: [],
+        createdAt: new Date(),
+      });
+    }
+
+    res.status(201).json({ success: true, data: publicUser(user) });
+  });
+
+  router.put("/users/:id", demoRequireRole(ADMIN_ONLY), (req, res) => {
+    const user = demoUsers.find((candidate) => candidate.id === parseInt(req.params.id, 10));
+    if (!user) return res.status(404).json({ error: "User not found" });
+    const { name, email, role, assignedRoom, password } = req.body;
+    if (name) user.name = name;
+    if (email) user.email = email;
+    if (role) user.role = role;
+    if (assignedRoom !== undefined) user.assignedRoom = assignedRoom || null;
+    if (password) user.password = password;
+    res.json({ success: true, data: publicUser(user) });
+  });
+
+  router.delete("/users/:id", demoRequireRole(ADMIN_ONLY), (req, res) => {
+    const userId = parseInt(req.params.id, 10);
+    if (userId === req.user!.id) return res.status(400).json({ error: "Cannot delete your own account" });
+    const index = demoUsers.findIndex((user) => user.id === userId);
+    if (index >= 0) demoUsers.splice(index, 1);
+    demoVolunteers.forEach((volunteer) => {
+      if (volunteer.userId === userId) volunteer.status = "inactive";
+    });
+    res.json({ success: true });
+  });
+
+  router.get("/volunteers", demoRequireRole(ADMIN_ONLY), (_req, res) => {
+    res.json({ success: true, data: listAdminVolunteers() });
+  });
+
+  router.get("/admin/volunteers", demoRequireRole(ADMIN_ONLY), (_req, res) => {
+    res.json({ success: true, data: listAdminVolunteers() });
+  });
+
+  router.post("/admin/volunteers", demoRequireRole(ADMIN_ONLY), (req, res) => {
+    const { name, email, password, phone, department, languages, availability, maxTasksPerDay } = req.body;
+    if (!name || !email || !password) {
+      return res.status(400).json({ error: "Name, email, and password are required" });
+    }
+
+    const user: DemoUser = {
+      id: nextUserId++,
+      name,
+      email,
+      password,
+      role: ROLE_VOLUNTEER,
+      assignedRoom: null,
+      createdAt: new Date(),
+    };
+    demoUsers.unshift(user);
+
+    const volunteer: DemoVolunteer = {
+      id: nextVolunteerId++,
+      userId: user.id,
+      fullName: name,
+      phone: phone || null,
+      department: department || "General",
+      status: "active",
+      maxTasksPerDay: maxTasksPerDay ?? 5,
+      languages: Array.isArray(languages) ? languages : [],
+      availability: Array.isArray(availability) ? availability : [],
+      createdAt: new Date(),
+    };
+    demoVolunteers.unshift(volunteer);
+
+    res.status(201).json({ success: true, data: { userId: user.id, volunteerId: volunteer.id } });
+  });
+
+  router.put("/admin/volunteers/:id", demoRequireRole(ADMIN_ONLY), (req, res) => {
+    const volunteer = demoVolunteers.find((candidate) => candidate.id === parseInt(req.params.id, 10));
+    if (!volunteer) return res.status(404).json({ error: "Volunteer not found" });
+    const user = demoUsers.find((candidate) => candidate.id === volunteer.userId);
+    const { name, email, phone, department, status, maxTasksPerDay, languages, availability } = req.body;
+    if (name) {
+      volunteer.fullName = name;
+      if (user) user.name = name;
+    }
+    if (email && user) user.email = email;
+    if (phone !== undefined) volunteer.phone = phone;
+    if (department !== undefined) volunteer.department = department;
+    if (status !== undefined) volunteer.status = status;
+    if (maxTasksPerDay !== undefined) volunteer.maxTasksPerDay = maxTasksPerDay;
+    if (languages !== undefined) volunteer.languages = languages;
+    if (availability !== undefined) volunteer.availability = availability;
+    res.json({ success: true });
+  });
+
+  router.patch("/admin/volunteers/:id/deactivate", demoRequireRole(ADMIN_ONLY), (req, res) => {
+    const volunteer = demoVolunteers.find((candidate) => candidate.id === parseInt(req.params.id, 10));
+    if (!volunteer) return res.status(404).json({ error: "Volunteer not found" });
+    volunteer.status = "inactive";
+    res.json({ success: true, data: volunteer });
+  });
+
+  router.put("/volunteers/me/availability", demoRequireRole(VOLUNTEER_SELF), (req, res) => {
+    const volunteer = demoVolunteers.find((candidate) => candidate.userId === req.user!.id);
+    if (!volunteer) return res.status(404).json({ error: "Volunteer profile not found" });
+    volunteer.availability = [{ dayOfWeek: new Date().getDay(), startTime: "00:00", endTime: "23:59", isAvailable: !!req.body.isAvailable }];
+    io.emit("VolunteerStatusChanged", { volunteerId: volunteer.id, isAvailable: !!req.body.isAvailable });
+    res.json({ success: true, data: { isAvailable: !!req.body.isAvailable } });
+  });
+
+  router.put("/volunteers/me/profile", demoRequireRole(CAN_EDIT_VOLUNTEER_PROFILE), (req, res) => {
+    const volunteer = demoVolunteers.find((candidate) => candidate.userId === req.user!.id);
+    if (!volunteer) return res.status(404).json({ error: "Volunteer profile not found" });
+    if (Array.isArray(req.body.languages)) volunteer.languages = req.body.languages;
+    if (Array.isArray(req.body.categories) && req.body.categories.length > 0) volunteer.department = req.body.categories[0];
+    res.json({ success: true, data: { success: true } });
+  });
+
+  router.get("/volunteers/me/assignments", demoRequireRole(VOLUNTEER_SELF), (req, res) => {
+    const volunteer = demoVolunteers.find((candidate) => candidate.userId === req.user!.id);
+    if (!volunteer) return res.status(404).json({ error: "Volunteer profile not found" });
+    res.json({ success: true, data: demoAssignments.filter((assignment) => assignment.volunteerId === volunteer.id).map(assignmentItem) });
+  });
+
+  router.get("/volunteer/my-assignments", demoRequireRole(VOLUNTEER_SELF), (req, res) => {
+    const volunteer = demoVolunteers.find((candidate) => candidate.userId === req.user!.id);
+    if (!volunteer) return res.status(404).json({ error: "Volunteer profile not found" });
+    res.json({ success: true, data: demoAssignments.filter((assignment) => assignment.volunteerId === volunteer.id).map(assignmentItem) });
+  });
+
+  router.put("/volunteer/availability", demoRequireRole(VOLUNTEER_SELF), (req, res) => {
+    const volunteer = demoVolunteers.find((candidate) => candidate.userId === req.user!.id);
+    if (!volunteer) return res.status(404).json({ error: "Volunteer profile not found" });
+    if (!Array.isArray(req.body.availability)) return res.status(400).json({ error: "Availability must be an array" });
+    volunteer.availability = req.body.availability;
+    res.json({ success: true });
+  });
+
+  router.put("/volunteer/languages", demoRequireRole(VOLUNTEER_SELF), (req, res) => {
+    const volunteer = demoVolunteers.find((candidate) => candidate.userId === req.user!.id);
+    if (!volunteer) return res.status(404).json({ error: "Volunteer profile not found" });
+    if (!Array.isArray(req.body.languages)) return res.status(400).json({ error: "Languages must be an array" });
+    volunteer.languages = req.body.languages;
+    res.json({ success: true });
+  });
+
+  const updateAssignment = (req: express.Request, res: express.Response, status: string) => {
+    const volunteer = demoVolunteers.find((candidate) => candidate.userId === req.user!.id);
+    if (!volunteer) return res.status(404).json({ error: "Volunteer profile not found" });
+    const assignment = demoAssignments.find((candidate) => candidate.id === parseInt(req.params.id, 10));
+    if (!assignment) return res.status(404).json({ error: "Assignment not found" });
+    if (assignment.volunteerId !== volunteer.id) return res.status(403).json({ error: "Not your assignment" });
+    assignment.assignmentStatus = status;
+    if (status === "completed") {
+      assignment.completedAt = new Date();
+      if (assignment.visitId) completeVisit(assignment.visitId, req.user!.id);
+    }
+    io.emit("AssignmentUpdated", { assignmentId: assignment.id, status });
+    res.json({ success: true, data: assignment });
+  };
+
+  router.put("/volunteer/assignments/:id/accept", demoRequireRole(VOLUNTEER_SELF), (req, res) => updateAssignment(req, res, "accepted"));
+  router.put("/volunteer/assignments/:id/start", demoRequireRole(VOLUNTEER_SELF), (req, res) => updateAssignment(req, res, "in_progress"));
+  router.put("/volunteer/assignments/:id/complete", demoRequireRole(VOLUNTEER_SELF), (req, res) => updateAssignment(req, res, "completed"));
+  router.put("/assignments/:id/accept", demoRequireRole(VOLUNTEER_SELF), (req, res) => updateAssignment(req, res, "accepted"));
+  router.put("/assignments/:id/complete", demoRequireRole(VOLUNTEER_SELF), (req, res) => updateAssignment(req, res, "completed"));
+  router.put("/assignments/:id/decline", demoRequireRole(VOLUNTEER_SELF), (req, res) => updateAssignment(req, res, "declined"));
+
+  router.get("/counselor/me/cases", demoRequireRole(COUNSELOR_SELF), (req, res) => {
+    const user = demoUsers.find((candidate) => candidate.id === req.user!.id);
+    let roomFilter = req.user!.role === ROLE_ADMIN ? null : getCounselorRoom(req.user!.role) || user?.assignedRoom || null;
+    const cases = demoVisits
+      .filter((visit) => ["WAITING", "IN_SESSION"].includes(visit.status))
+      .filter((visit) => !roomFilter || visit.assignedPlan === roomFilter)
+      .map(queueItem);
+    res.json({ success: true, data: cases });
+  });
+
+  router.put("/counselor/cases/:id/complete", demoRequireRole(COUNSELOR_SELF), (req, res) => {
+    const updated = completeVisit(parseInt(req.params.id, 10), req.user!.id);
+    if (!updated) return res.status(404).json({ error: "Visit not found" });
+    io.emit("VisitorCompleted", { visitId: updated.id });
+    res.json({ success: true, data: updated });
+  });
+
+  router.get("/prayer-requests", demoRequireRole(CAN_VIEW_PRAYERS), (_req, res) => {
+    const prayerRequests = demoVisits
+      .filter((visit) => visit.prayerRequest)
+      .map((visit) => {
+        const visitor = findVisitor(visit.visitorId);
+        return {
+          visitId: visit.id,
+          prayerRequest: visit.prayerRequest,
+          purpose: visit.purpose,
+          status: visit.status,
+          checkInTime: visit.checkInTime,
+          visitorName: visitor?.name,
+          visitorPhone: visitor?.phone,
+        };
+      });
+    res.json({ success: true, data: prayerRequests });
+  });
+
+  router.get("/reports", demoRequireRole(ADMIN_ONLY), (_req, res) => {
+    res.json({
+      success: true,
+      data: {
+        summary: {
+          totalVisitors: demoVisitors.length,
+          totalVisits: demoVisits.length,
+          completedVisits: demoVisits.filter((visit) => visit.status === "COMPLETED").length,
+          totalVolunteers: demoVolunteers.length,
+          activeVolunteers: demoVolunteers.filter((volunteer) => volunteer.status === "active").length,
+          totalAssignments: demoAssignments.length,
+          completedAssignments: demoAssignments.filter((assignment) => assignment.assignmentStatus === "completed").length,
+        },
+        purposeDistribution: chartRows(demoVisits.map((visit) => visit.purpose)),
+        recentVisits: demoVisits.map((visit) => {
+          const visitor = findVisitor(visit.visitorId);
+          return {
+            visitId: visit.id,
+            purpose: visit.purpose,
+            status: visit.status,
+            checkInTime: visit.checkInTime,
+            completionTime: visit.completionTime,
+            visitorName: visitor?.name,
+            visitorRegion: visitor?.region,
+          };
+        }),
+      },
+    });
+  });
+
+  return router;
 }
 
 // Ensure default users exist
@@ -233,6 +886,11 @@ async function startServer() {
   }));
   app.use(express.json());
 
+  const useDemoData = await shouldUseDemoData();
+  if (useDemoData) {
+    app.use("/api", createDemoApi(io));
+  }
+
   // API endpoints
   app.post("/api/auth/login", async (req, res) => {
     try {
@@ -255,7 +913,7 @@ async function startServer() {
         { expiresIn: "8h" }
       );
 
-      res.json({ token, user: { id: user.id, name: user.name, email: user.email, role: user.role } });
+      res.json({ token, user: { id: user.id, name: user.name, email: user.email, role: user.role, assignedRoom: user.assignedRoom } });
     } catch (error) {
       console.error("Login error:", error);
       res.status(500).json({ error: "Internal server error" });
@@ -1523,7 +2181,10 @@ async function startServer() {
   // Vite middleware for development (MUST be after API routes)
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: process.env.DISABLE_HMR === "true" ? false : undefined,
+      },
       appType: "spa",
     });
     app.use(vite.middlewares);
@@ -1539,7 +2200,11 @@ async function startServer() {
   // the appropriate server upgrade handlers here in subsequent tasks.
 
   httpServer.listen(PORT, "0.0.0.0", async () => {
-    await seedUsers();
+    if (useDemoData) {
+      console.log("Demo data mode active; database routes are bypassed for local development.");
+    } else {
+      await seedUsers();
+    }
     console.log(`Server running on port ${PORT}`);
   });
 }
