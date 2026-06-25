@@ -11,7 +11,7 @@ interface VisitorIntakeModalProps {
 const REGIONS = ['North America', 'South America', 'Europe', 'Africa', 'Asia', 'Middle East', 'Oceania', 'Other'];
 const PURPOSES = ['Counseling', 'Prayer', 'Fellowship', 'First Visit', 'Follow-up', 'Business Consultation', 'Other'];
 const PLANS = ['Young Partner Plan', 'Business Blessing'];
-const LANGUAGES = ['English', 'Hindi', 'Tamil', 'Telugu', 'Malayalam', 'Kannada', 'Bengali', 'Spanish', 'French', 'Portuguese', 'Arabic', 'Mandarin', 'Korean', 'Japanese', 'Other'];
+const LANGUAGES = ['Tamil', 'English', 'Hindi', 'Malayalam', 'Telugu', 'Kannada', 'Other'];
 
 export default function VisitorIntakeModal({ isOpen, onClose, onSubmit }: VisitorIntakeModalProps) {
   const [formData, setFormData] = useState({

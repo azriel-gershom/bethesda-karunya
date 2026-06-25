@@ -9,6 +9,7 @@ export const createPool = () => {
     return new Pool({
       connectionString: process.env.DATABASE_URL,
       connectionTimeoutMillis: 15000,
+      ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : undefined
     });
   }
 

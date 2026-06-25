@@ -127,6 +127,7 @@ export default function VolunteerDashboard({ token, user }: { token: string; use
     socket.on('AssignmentAccepted', () => fetchAssignments());
     socket.on('AssignmentCompleted', () => fetchAssignments());
     socket.on('AssignmentDeclined', () => fetchAssignments());
+    socket.on('AssignmentUpdated', () => fetchAssignments());
 
     return () => { socket.disconnect(); };
   }, [token]);
@@ -214,8 +215,8 @@ export default function VolunteerDashboard({ token, user }: { token: string; use
     setRefreshing(false);
   };
 
-  const activeAssignments = assignments.filter(a => ['PENDING', 'ACCEPTED', 'IN_PROGRESS'].includes(a.status));
-  const completedAssignments = assignments.filter(a => ['COMPLETED', 'DECLINED'].includes(a.status));
+  const activeAssignments = assignments.filter(a => ['PENDING', 'ACCEPTED', 'IN_PROGRESS'].includes(a.status.toUpperCase()));
+  const completedAssignments = assignments.filter(a => ['COMPLETED', 'DECLINED'].includes(a.status.toUpperCase()));
 
   // Availability state — derive from profile or default to true for seed user
   const [isAvailable, setIsAvailable] = useState(true);
@@ -416,7 +417,7 @@ export default function VolunteerDashboard({ token, user }: { token: string; use
 
                     {/* Action Buttons */}
                     <div className="mt-auto pt-4 border-t border-zinc-800/50 flex gap-2">
-                      {assignment.status === 'PENDING' && (
+                      {assignment.status.toUpperCase() === 'PENDING' && (
                         <>
                           <motion.button
                             onClick={() => acceptAssignment(assignment.id)}
@@ -430,7 +431,7 @@ export default function VolunteerDashboard({ token, user }: { token: string; use
                           </motion.button>
                         </>
                       )}
-                      {assignment.status === 'ACCEPTED' && (
+                      {assignment.status.toUpperCase() === 'ACCEPTED' && (
                         <motion.button
                           onClick={() => startAssignment(assignment.id)}
                           disabled={actionLoading === assignment.id}
@@ -442,7 +443,7 @@ export default function VolunteerDashboard({ token, user }: { token: string; use
                           START SESSION
                         </motion.button>
                       )}
-                      {assignment.status === 'IN_PROGRESS' && (
+                      {assignment.status.toUpperCase() === 'IN_PROGRESS' && (
                         <motion.button
                           onClick={() => completeAssignment(assignment.id)}
                           disabled={actionLoading === assignment.id}
